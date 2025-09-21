@@ -1,100 +1,113 @@
 # Video Control cURL Cheatsheet (Production)
 
-All commands target the production backend (`https://audio.boykevanvugt.nl/api`).
-Every request requires the admin header (`x-admin-key: changeme`).
+Base URL: `https://audio.wondercraftmc.nl/api/`
 
-Replace the `TOKEN_HERE` / `PLAYER_ID_HERE` placeholders with the identifiers you want to target. The same payload rules apply as in development—send only one identifier per call.
+- Send JSON bodies (`-H "Content-Type: application/json"`).
+- Admin endpoints require `-H "x-admin-key: <your-admin-key>"`.
+- Target a recipient with exactly one of: `token`, `playerId`, `playerUuid`, `playerName`, or `regionId`.
 
 ---
 
-## Initialise a Video
+## POST /set-region
+Assign or clear a player's region mapping.
+
 ```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/init \
+curl -X POST https://audio.wondercraftmc.nl/api/set-region \
   -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
+  -d '{"playerUuid":"a7b49cc2-2bdb-4e4e-aa45-95daadcc2369","regionId":"spawn","regionDisplayName":"Spawn"}'
+```
+
+Clear mapping:
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/set-region \
+  -H "Content-Type: application/json" \
+  -d '{"token":"TOKEN_HERE","regionId":null}'
+```
+
+---
+
+## POST /admin/video/init
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/init \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{
-        "token": "TOKEN_HERE",
+        "regionId": "spawn",
         "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        "startAtEpochMs": 1720000000000,
-        "muted": false,
-        "volume": 1.0,
-        "sessionId": "area-lobby",
-        "autoclose": false
-      }'
-```
-
-## Play
-```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"token":"TOKEN_HERE", "autoclose": false}'
-```
-
-## Pause
-```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/pause \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"token":"TOKEN_HERE", "atMs": 15000}'
-```
-
-## Seek
-```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/seek \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"token":"TOKEN_HERE", "toMs": 45000}'
-```
-
-## Play Instant (init + play)
-```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play-instant \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{
-        "token": "TOKEN_HERE",
-        "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        "muted": false,
-        "volume": 1.0,
-        "sessionId": "area-lobby",
         "autoclose": true
       }'
 ```
 
-## Close
+## POST /admin/video/play
 ```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/close \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/play \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE"}'
 ```
 
-## List Connections
+## POST /admin/video/pause
 ```sh
-curl https://audio.boykevanvugt.nl/api/admin/video/connections \
-  -H "x-admin-key: changeme"
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/pause \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"TOKEN_HERE","atMs":15000}'
 ```
 
-### Optional: Target by Player ID
-All endpoints also accept `playerId` instead of `token`:
+## POST /admin/video/seek
 ```sh
-curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"playerId":"PLAYER_ID_HERE"}'
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/seek \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"playerName":"Steve","toMs":45000}'
+```
+
+## POST /admin/video/close
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/close \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"TOKEN_HERE"}'
+```
+
+## POST /admin/video/play-instant
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/play-instant \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
+```
+
+## POST /admin/video/preload
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/preload \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"TOKEN_HERE","url":"https://example.com/video.mp4"}'
+```
+
+## POST /admin/video/initialize-playlist
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/video/initialize-playlist \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/loop.mp4","volume":0.8}]}'
+```
+
+## GET /admin/video/connections
+```sh
+curl https://audio.wondercraftmc.nl/api/admin/video/connections -H "x-admin-key: changeme"
+```
+
+## GET /admin/video/regions
+```sh
+curl https://audio.wondercraftmc.nl/api/admin/video/regions -H "x-admin-key: changeme"
+```
+
+## GET /healthz
+```sh
+curl https://audio.wondercraftmc.nl/api/healthz
 ```
 
 ---
 
 ## Minecraft Plugin WebSocket (Production)
 
-For production servers the plugin connects to the API host via WebSocket:
+- Endpoint: `wss://audio.wondercraftmc.nl/api/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+- Token: value must match `PLUGIN_TOKEN` on the server.
 
-* **Endpoint:** `wss://audio.boykevanvugt.nl/api/ws/plugin?token=YOUR_PLUGIN_TOKEN`
-* **Token:** use the `PLUGIN_TOKEN` configured on the server (matches the `.env` value). Connections with an incorrect token are
-  closed immediately.
+Send JSON payloads with the same `type` names and fields as the REST helpers: `SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`, `VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`.
 
-Once connected you can send the same JSON payloads as the REST helpers (`SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`,
-`VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`). The server responds with
-`PLUGIN_RESPONSE` messages mirroring the REST status/body.
+The server responds with `PLUGIN_RESPONSE` messages including the echoed `id` (if sent), status and body.

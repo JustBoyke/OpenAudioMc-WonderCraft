@@ -1,63 +1,97 @@
-# Quick Reference – Play Video Via Different Identifiers
+# Quick Reference – All Endpoints (Development)
 
-All examples hit the local backend (`http://localhost:8080`). Replace the placeholder values with the desired target. **Only provide one identifier per request** – the server will use whichever field you send (`token`, `playerUuid`, `playerId`, or `playerName`).
+Base URL: `http://localhost:8080`  •  Use exactly one of `token` | `playerId` | `playerUuid` | `playerName` | `regionId` for targeting. Admin routes require `x-admin-key` if configured.
 
-| Identifier | Field | Example Value |
-|------------|-------|---------------|
-| Token | `token` | `565` |
-| Player UUID | `playerUuid` | `a7b49cc2-2bdb-4e4e-aa45-95daadcc2369` |
-| Player ID (custom) | `playerId` | `player-565` |
-| Player Name | `playerName` | `boykev` |
+---
 
-Use the same payload structure for each call—swap the identifier field as needed.
-
+## Set Region
 ```sh
-# Play using token
-curl -X POST http://localhost:8080/admin/video/play \
+curl -X POST http://localhost:8080/set-region \
   -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"token":"565"}'
-
-# Play using player UUID
-curl -X POST http://localhost:8080/admin/video/play \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"playerUuid":"a7b49cc2-2bdb-4e4e-aa45-95daadcc2369"}'
-
-# Play using playerId (custom identifier your backend assigns)
-curl -X POST http://localhost:8080/admin/video/play \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"playerId":"player-565"}'
-
-# Play using player name
-curl -X POST http://localhost:8080/admin/video/play \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"playerName":"boykev"}'
+  -d '{"playerUuid":"a7b49cc2-2bdb-4e4e-aa45-95daadcc2369","regionId":"spawn","regionDisplayName":"Spawn"}'
 ```
 
-To trigger other actions (pause, seek, close, play-instant) simply replace the URL while keeping a single identifier field:
-
+## Init
 ```sh
-# Pause example (replace token with any other identifier field)
+curl -X POST http://localhost:8080/admin/video/init \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
+```
+
+## Play
+```sh
+curl -X POST http://localhost:8080/admin/video/play \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"565"}'
+```
+
+## Pause
+```sh
 curl -X POST http://localhost:8080/admin/video/pause \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{"token":"565", "atMs": 12000}'
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"565","atMs":12000}'
+```
+
+## Seek
+```sh
+curl -X POST http://localhost:8080/admin/video/seek \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"playerName":"Steve","toMs":45000}'
+```
+
+## Close
+```sh
+curl -X POST http://localhost:8080/admin/video/close \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"565"}'
+```
+
+## Play Instant
+```sh
+curl -X POST http://localhost:8080/admin/video/play-instant \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
+```
+
+## Preload
+```sh
+curl -X POST http://localhost:8080/admin/video/preload \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"token":"565","url":"https://example.com/video.mp4"}'
+```
+
+## Initialize Playlist
+```sh
+curl -X POST http://localhost:8080/admin/video/initialize-playlist \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/loop.mp4","volume":0.8}]}'
+```
+
+## List Connections
+```sh
+curl http://localhost:8080/admin/video/connections -H "x-admin-key: changeme"
+```
+
+## List Regions
+```sh
+curl http://localhost:8080/admin/video/regions -H "x-admin-key: changeme"
+```
+
+## Health
+```sh
+curl http://localhost:8080/healthz
 ```
 
 ---
 
 ## Minecraft Plugin WebSocket (Development)
 
-If you are working on the Minecraft plugin you can connect it directly to the backend without issuing cURL requests:
+- Endpoint: `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+- Token: same as `PLUGIN_TOKEN` in `.env` (default `changeme`).
 
-* **Endpoint:** `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
-* **Token:** supply the same value you configured for `PLUGIN_TOKEN` in `.env` (default `changeme`).
+Send JSON with `type` set to one of: `SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`, `VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`.
 
-Send JSON payloads with the same `type` names and fields as the HTTP helpers. Example:
-
+Example:
 ```json
 {
   "id": "region-sync",
@@ -67,6 +101,4 @@ Send JSON payloads with the same `type` names and fields as the HTTP helpers. Ex
 }
 ```
 
-The server answers each command with a `PLUGIN_RESPONSE` message that includes the HTTP status and body you would normally get
-back from the REST API.
-
+Each command receives a `PLUGIN_RESPONSE` with the HTTP-like status and body.

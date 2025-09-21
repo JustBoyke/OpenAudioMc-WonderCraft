@@ -1,13 +1,73 @@
-# Video Control cURL Cheatsheet
+# Video Control API – cURL (Development)
 
-All commands target the local development server (`http://localhost:8080`).
-Every request requires the admin header (`x-admin-key: changeme`).
+Base URL: `http://localhost:8080`
 
-Replace the `TOKEN_HERE` or `PLAYER_ID_HERE` placeholders with the values you want to target. If you are testing with the client we wired up, you can grab the current token from DevTools via `window.__oaVideoExtensionDebug.wsUrl()`.
+- Send JSON bodies (`-H "Content-Type: application/json"`).
+- Admin endpoints require `-H "x-admin-key: <your-admin-key>"` (if `ADMIN_KEY` is set).
+- Target a recipient using exactly one of: `token`, `playerId`, `playerUuid`, `playerName`, or `regionId`.
+
+Tip: in the browser client, you can inspect the current token via `window.__oaVideoExtensionDebug.wsUrl()` in DevTools.
 
 ---
 
-## Initialise a Video
+## Targeting Helpers
+
+- Player/Token fields (choose one): `token` | `playerId` | `playerUuid` | `playerName`
+- Region broadcast: use `regionId` instead of a player/token.
+
+Examples:
+
+```sh
+# Target a specific token
+"token": "TOKEN_HERE"
+
+# Target by player UUID (case-insensitive)
+"playerUuid": "a7b49cc2-2bdb-4e4e-aa45-95daadcc2369"
+
+# Broadcast to a region (all members in that region)
+"regionId": "spawn"
+```
+
+---
+
+## POST /set-region
+Assign or clear a player's region mapping. The server also maintains canonical mappings for `playerId`/`playerUuid`/`playerName` so future sessions inherit the region.
+
+Body:
+- One player reference: `token` | `playerId` | `playerUuid` | `playerName`
+- Region: `region` or `regionId` (string). Use `null` to clear.
+- Optional label: `regionDisplayName` (or `regionName`/`regionLabel`).
+
+Examples:
+
+```sh
+# Set region "spawn" for a player UUID
+curl -X POST http://localhost:8080/set-region \
+  -H "Content-Type: application/json" \
+  -d '{
+        "playerUuid": "a7b49cc2-2bdb-4e4e-aa45-95daadcc2369",
+        "regionId": "spawn",
+        "regionDisplayName": "Spawn"
+      }'
+
+# Clear region for a connected token
+curl -X POST http://localhost:8080/set-region \
+  -H "Content-Type: application/json" \
+  -d '{ "token": "TOKEN_HERE", "regionId": null }'
+```
+
+---
+
+## POST /admin/video/init
+Prepare a video for a target or region.
+
+Body fields:
+- Required: `url`
+- Optional: `startAtEpochMs`, `muted` (bool), `volume` (0.0–1.0), `sessionId`, `autoclose` (bool)
+- Target: one of the targeting fields above
+
+Examples:
+
 ```sh
 curl -X POST http://localhost:8080/admin/video/init \
   -H "Content-Type: application/json" \
@@ -21,17 +81,33 @@ curl -X POST http://localhost:8080/admin/video/init \
         "sessionId": "area-lobby",
         "autoclose": false
       }'
+
+# Region broadcast
+curl -X POST http://localhost:8080/admin/video/init \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "regionId": "spawn",
+        "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        "autoclose": true
+      }'
 ```
 
-## Play
+---
+
+## POST /admin/video/play
+Start or resume playback. Optional overrides: `atMs`, `volume`, `muted`, `autoclose`.
+
 ```sh
 curl -X POST http://localhost:8080/admin/video/play \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
-  -d '{"token":"TOKEN_HERE", "autoclose": false}'
+  -d '{"regionId":"spawn", "autoclose": false}'
 ```
 
-## Pause
+## POST /admin/video/pause
+Pause at current position or at a specific `atMs`.
+
 ```sh
 curl -X POST http://localhost:8080/admin/video/pause \
   -H "Content-Type: application/json" \
@@ -39,30 +115,19 @@ curl -X POST http://localhost:8080/admin/video/pause \
   -d '{"token":"TOKEN_HERE", "atMs": 15000}'
 ```
 
-## Seek
+## POST /admin/video/seek
+Jump to `toMs` (ms from start). Optional: `startAtEpochMs`, `volume`, `muted`, `autoclose`.
+
 ```sh
 curl -X POST http://localhost:8080/admin/video/seek \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
-  -d '{"token":"TOKEN_HERE", "toMs": 45000}'
+  -d '{"playerName":"Steve", "toMs": 45000}'
 ```
 
-## Play Instant (init + play)
-```sh
-curl -X POST http://localhost:8080/admin/video/play-instant \
-  -H "Content-Type: application/json" \
-  -H "x-admin-key: changeme" \
-  -d '{
-        "token": "TOKEN_HERE",
-        "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        "muted": false,
-        "volume": 1.0,
-        "sessionId": "area-lobby",
-        "autoclose": true
-      }'
-```
+## POST /admin/video/close
+Stop and clear video state for the target.
 
-## Close
 ```sh
 curl -X POST http://localhost:8080/admin/video/close \
   -H "Content-Type: application/json" \
@@ -70,36 +135,79 @@ curl -X POST http://localhost:8080/admin/video/close \
   -d '{"token":"TOKEN_HERE"}'
 ```
 
-## List Connections
-```sh
-curl http://localhost:8080/admin/video/connections \
-  -H "x-admin-key: changeme"
-```
+## POST /admin/video/play-instant
+Convenience: init and immediately play. Optional: `startAtEpochMs`, `startOffsetMs`, `muted`, `volume`, `sessionId`, `autoclose`.
 
-### Optional: Target by Player ID
-All endpoints also accept `playerId` instead of `token`:
 ```sh
-curl -X POST http://localhost:8080/admin/video/play \
+curl -X POST http://localhost:8080/admin/video/play-instant \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
-  -d '{"playerId":"PLAYER_ID_HERE"}'
+  -d '{
+        "regionId": "spawn",
+        "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        "muted": false,
+        "volume": 1.0,
+        "autoclose": true
+      }'
+```
+
+## POST /admin/video/preload
+Ask clients to preload a `url` (optionally with `volume`, `muted`, `sessionId`).
+
+```sh
+curl -X POST http://localhost:8080/admin/video/preload \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{"token":"TOKEN_HERE", "url": "https://example.com/video.mp4"}'
+```
+
+## POST /admin/video/initialize-playlist
+Initialize a playlist. Body: `items` array with `{ url, volume?, muted?, autoclose?, atMs? }`.
+
+```sh
+curl -X POST http://localhost:8080/admin/video/initialize-playlist \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "regionId": "spawn",
+        "items": [
+          { "url": "https://example.com/intro.mp4", "autoclose": true },
+          { "url": "https://example.com/loop.mp4", "muted": false, "volume": 0.8 }
+        ]
+      }'
+```
+
+## GET /admin/video/connections
+List connected clients and their current media state.
+
+```sh
+curl http://localhost:8080/admin/video/connections -H "x-admin-key: changeme"
+```
+
+## GET /admin/video/regions
+List known regions, members, and active media.
+
+```sh
+curl http://localhost:8080/admin/video/regions -H "x-admin-key: changeme"
+```
+
+## GET /healthz
+Simple health probe (no auth).
+
+```sh
+curl http://localhost:8080/healthz
 ```
 
 ---
 
 ## Minecraft Plugin WebSocket
 
-The backend also exposes a WebSocket endpoint for the Minecraft plugin so it can push the same JSON payloads without going
-through the admin REST API.
+Use WebSocket instead of REST to issue the same commands from your plugin.
 
-* **Endpoint:** `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
-* **Token:** matches the `PLUGIN_TOKEN` value in your `.env` (defaults to `changeme`). Connections without the correct token are
-  rejected.
+- Endpoint: `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+- Token: must match `PLUGIN_TOKEN` in `.env`.
 
-When the socket opens the server sends a `PLUGIN_HELLO` payload that lists currently connected browser clients. Afterwards the
-plugin can send the same `type` values that the HTTP routes accept (`SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`,
-`VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`). Include any targeting fields
-(`token`, `playerId`, `playerUuid`, `playerName`, or `regionId`) in the payload just like you would in the cURL requests.
+Commands: `SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`, `VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT` (alias: `VIDEO_INITIALIZE_PLAYLIST`). Include the same targeting fields as the REST examples.
 
 Example message:
 
@@ -113,5 +221,4 @@ Example message:
 }
 ```
 
-The server replies with `PLUGIN_RESPONSE` messages that echo the `id` (if provided) and include the HTTP status and body for
-the handled command.
+The server replies with `PLUGIN_RESPONSE` messages that echo the `id` (if provided) and include the HTTP status and body for the handled command.
