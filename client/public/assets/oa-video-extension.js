@@ -263,7 +263,6 @@
           <div class="oa-vid-status">Idle</div>
           <div class="oa-vid-actions">
             <button class="oa-vid-action" data-act="fullscreen">Fullscreen</button>
-            <button class="oa-vid-action" data-act="close">Close</button>
           </div>
         </div>
       </div>`;
@@ -276,7 +275,6 @@
     const video = backdrop.querySelector('.oa-vid-video');
     const status = backdrop.querySelector('.oa-vid-status');
     const fullscreenBtn = backdrop.querySelector('[data-act=fullscreen]');
-    const closeBtn = backdrop.querySelector('[data-act=close]');
 
     video.setAttribute('controlsList', 'nodownload noplaybackrate nofullscreen');
     video.setAttribute('disablePictureInPicture', 'true');
@@ -295,7 +293,6 @@
     });
 
     fullscreenBtn.addEventListener('click', toggleFullscreen);
-    closeBtn.addEventListener('click', hideModal);
 
     return {
       backdrop,
@@ -306,7 +303,6 @@
       video,
       status,
       fullscreenBtn,
-      closeBtn,
     };
   }
 

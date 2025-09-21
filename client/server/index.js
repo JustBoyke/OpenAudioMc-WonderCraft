@@ -134,7 +134,7 @@ function registerMediaCommand(token, payload, context = {}) {
         url: state.url ?? record.init?.url ?? null,
         autoclose,
       };
-      record.lastCommand = { ...cloned, atMs, startAtEpochMs, autoclose };
+      record.lastCommand = { ...cloned, atMs, startAtEpochMs: startedAtEpochMs, autoclose };
       break;
     }
     case "VIDEO_PAUSE": {
