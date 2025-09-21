@@ -6,6 +6,9 @@ const http = require("http");
 const path = require("path");
 const { WebSocketServer } = require("ws");
 
+// Load environment variables from .env file if present
+require("dotenv").config();
+
 // --- Config ---
 const PORT = process.env.PORT || 8080;
 // For a real deployment, terminate TLS at a proxy (nginx/traefik) and use wss:// upstream.
