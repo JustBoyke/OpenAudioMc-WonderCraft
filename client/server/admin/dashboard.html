@@ -163,6 +163,34 @@
       overflow: hidden;
     }
 
+    .tabs {
+      display: flex;
+      gap: 12px;
+    }
+
+    .tab-button {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      color: var(--text-secondary);
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .tab-button.active {
+      background: rgba(79, 70, 229, 0.18);
+      border-color: rgba(79, 70, 229, 0.55);
+      color: var(--text-primary);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.25);
+    }
+
+    .tab-content.hidden {
+      display: none;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -359,15 +387,22 @@
     <section class="status-bar">
       <div><strong>Connections:</strong> <span id="connCount">0</span></div>
       <div><strong>Active Sessions:</strong> <span id="activeCount">0</span></div>
+      <div><strong>Regions:</strong> <span id="regionCount">0</span></div>
       <div><strong>Last Refresh:</strong> <span id="lastRefresh">—</span></div>
     </section>
 
-    <section class="table-wrapper">
+    <nav class="tabs">
+      <button type="button" class="tab-button active" data-tab="connections">Connections</button>
+      <button type="button" class="tab-button" data-tab="regions">Regions</button>
+    </nav>
+
+    <section class="table-wrapper tab-content" id="connectionsSection">
       <table>
         <thead>
           <tr>
             <th>Token</th>
             <th>Player</th>
+            <th>Region</th>
             <th>Session</th>
             <th>Status</th>
             <th>Position</th>
@@ -379,7 +414,29 @@
         </thead>
         <tbody id="connectionsBody">
           <tr>
-            <td colspan="9" class="empty-state">Enter the admin key to load connections.</td>
+            <td colspan="10" class="empty-state">Enter the admin key to load connections.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="regionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>Region</th>
+            <th>Members</th>
+            <th>Status</th>
+            <th>Position</th>
+            <th>Volume</th>
+            <th>Autoclose</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="regionsBody">
+          <tr>
+            <td colspan="8" class="empty-state">Enter the admin key to load regions.</td>
           </tr>
         </tbody>
       </table>

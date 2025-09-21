@@ -21,6 +21,11 @@ app.use(express.json());
 const clientsByToken = new Map(); // token -> { ws, playerId, lastSeen }
 const tokenToPlayerId = new Map(); // optional helper if you map tokens => playerId
 const activeMediaByToken = new Map(); // token -> media state snapshot
+const activeMediaByRegion = new Map(); // regionId -> media state snapshot
+const tokensByRegion = new Map(); // regionId -> Set<token>
+const regionByToken = new Map(); // token -> regionId
+const regionByPlayerKey = new Map(); // canonical player key -> regionId
+const regionDisplayNames = new Map(); // regionId -> last seen display name
 // In practice, you should authenticate and map token -> unique player identity.
 
 // --- Token validation (STUB) ---
@@ -53,8 +58,8 @@ function snapshotPayload(payload) {
   return payload ? JSON.parse(JSON.stringify(payload)) : payload;
 }
 
-function ensureMediaRecord(token) {
-  let record = activeMediaByToken.get(token);
+function ensureMediaRecord(store, key) {
+  let record = store.get(key);
   if (!record) {
     record = {
       init: null,
@@ -65,7 +70,7 @@ function ensureMediaRecord(token) {
       preload: null,
       playlist: null,
     };
-    activeMediaByToken.set(token, record);
+    store.set(key, record);
   }
   return record;
 }
@@ -77,18 +82,23 @@ function pruneStaleMedia(ttl = 15 * 60 * 1000) {
       activeMediaByToken.delete(token);
     }
   }
+  for (const [regionId, record] of activeMediaByRegion) {
+    if (!record?.lastUpdate || record.lastUpdate < cutoff) {
+      activeMediaByRegion.delete(regionId);
+    }
+  }
 }
 
-function registerMediaCommand(token, payload, context = {}) {
+function registerMediaCommand(store, key, payload, context = {}) {
   if (!payload || typeof payload.type !== "string" || !payload.type.startsWith("VIDEO_")) return;
 
   if (payload.type === "VIDEO_CLOSE") {
-    activeMediaByToken.delete(token);
+    store.delete(key);
     return;
   }
 
   const now = Date.now();
-  const record = ensureMediaRecord(token);
+  const record = ensureMediaRecord(store, key);
   record.lastUpdate = now;
   if (context.sessionId != null) {
     record.sessionId = context.sessionId;
@@ -199,10 +209,233 @@ function registerMediaCommand(token, payload, context = {}) {
       break;
     }
     default:
+      record.lastCommand = cloned;
       break;
   }
 
   pruneStaleMedia();
+}
+
+function rememberRegionDisplayName(regionId, displayName) {
+  if (!regionId || typeof displayName !== "string") return;
+  const trimmed = displayName.trim();
+  if (!trimmed) return;
+  regionDisplayNames.set(regionId, trimmed);
+}
+
+function getRegionDisplayName(regionId) {
+  if (!regionId) return null;
+  return regionDisplayNames.get(regionId) || regionId;
+}
+
+function normalizeRegionId(value, options = {}) {
+  if (value == null) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const canonical = trimmed.toLowerCase();
+  if (options.rememberDisplay !== false) {
+    const display = typeof options.displayName === "string" && options.displayName.trim()
+      ? options.displayName.trim()
+      : trimmed;
+    rememberRegionDisplayName(canonical, display);
+  }
+  return canonical;
+}
+
+function canonicalizePlayerKey(kind, value) {
+  if (!kind || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return `${kind}:${trimmed.toLowerCase()}`;
+}
+
+function collectPlayerKeysFromInfo(info = {}) {
+  const keys = new Set();
+  if (info.playerId) keys.add(canonicalizePlayerKey("id", info.playerId));
+  if (info.playerUuid) keys.add(canonicalizePlayerKey("uuid", info.playerUuid));
+  if (info.playerName) keys.add(canonicalizePlayerKey("name", info.playerName));
+  return Array.from(keys).filter(Boolean);
+}
+
+function collectPlayerKeysFromBody(body = {}) {
+  const keys = new Set();
+  if (typeof body.playerId === "string" && body.playerId.trim()) {
+    keys.add(canonicalizePlayerKey("id", body.playerId));
+  }
+  if (typeof body.playerUuid === "string" && body.playerUuid.trim()) {
+    keys.add(canonicalizePlayerKey("uuid", body.playerUuid));
+  }
+  if (typeof body.playerName === "string" && body.playerName.trim()) {
+    keys.add(canonicalizePlayerKey("name", body.playerName));
+  }
+  return Array.from(keys).filter(Boolean);
+}
+
+function assignRegionForPlayerKey(key, regionId) {
+  if (!key) return;
+  if (!regionId) {
+    regionByPlayerKey.delete(key);
+  } else {
+    regionByPlayerKey.set(key, regionId);
+  }
+}
+
+function assignRegionForPlayerKeys(keys, regionId) {
+  if (!Array.isArray(keys)) return;
+  for (const key of keys) {
+    assignRegionForPlayerKey(key, regionId);
+  }
+}
+
+function assignRegionForToken(token, regionId, options = {}) {
+  const { alreadyCanonical = false, displayName = null } = options;
+  let canonical = null;
+  if (alreadyCanonical) {
+    if (typeof regionId === "string" && regionId.trim()) {
+      canonical = regionId;
+    }
+  } else {
+    canonical = normalizeRegionId(regionId);
+  }
+
+  if (canonical && displayName) {
+    rememberRegionDisplayName(canonical, displayName);
+  }
+
+  const previous = regionByToken.get(token) || null;
+  if (previous === canonical) {
+    const info = clientsByToken.get(token);
+    if (info) {
+      info.region = canonical || null;
+      info.regionDisplayName = canonical ? getRegionDisplayName(canonical) : null;
+    }
+    return { changed: false, previous, regionId: canonical };
+  }
+
+  if (previous) {
+    const set = tokensByRegion.get(previous);
+    if (set) {
+      set.delete(token);
+      if (set.size === 0) {
+        tokensByRegion.delete(previous);
+      }
+    }
+  }
+
+  if (!canonical) {
+    regionByToken.delete(token);
+  } else {
+    let set = tokensByRegion.get(canonical);
+    if (!set) {
+      set = new Set();
+      tokensByRegion.set(canonical, set);
+    }
+    set.add(token);
+    regionByToken.set(token, canonical);
+  }
+
+  const info = clientsByToken.get(token);
+  if (info) {
+    info.region = canonical || null;
+    info.regionDisplayName = canonical ? getRegionDisplayName(canonical) : null;
+  }
+
+  return { changed: true, previous, regionId: canonical };
+}
+
+function collectTokensForPlayer(value, source) {
+  if (!value || !source) return [];
+  const lowered = typeof value === "string" ? value.toLowerCase() : null;
+  const matches = [];
+  for (const [token, info] of clientsByToken) {
+    if (!info) continue;
+    if (source === "playerId" && info.playerId === value) {
+      matches.push(token);
+      continue;
+    }
+    if (lowered) {
+      if (source === "playerUuid" && info.playerUuid && info.playerUuid.toLowerCase() === lowered) {
+        matches.push(token);
+        continue;
+      }
+      if (source === "playerName" && info.playerName && info.playerName.toLowerCase() === lowered) {
+        matches.push(token);
+        continue;
+      }
+    }
+    if (token === value) {
+      matches.push(token);
+    }
+  }
+  return matches;
+}
+
+function getRegionForClient(token, info = clientsByToken.get(token)) {
+  if (!info) {
+    return regionByToken.get(token) || null;
+  }
+  const keys = collectPlayerKeysFromInfo(info);
+  for (const key of keys) {
+    const regionId = regionByPlayerKey.get(key);
+    if (regionId) return regionId;
+  }
+  return regionByToken.get(token) || null;
+}
+
+function applyRegionForClient(token, info = clientsByToken.get(token)) {
+  const assignedRegion = getRegionForClient(token, info);
+  const result = assignRegionForToken(token, assignedRegion, { alreadyCanonical: true });
+  if (!result.changed) {
+    return result.regionId;
+  }
+
+  if (!result.regionId && result.previous) {
+    sendToClientByToken(token, { type: "VIDEO_CLOSE" });
+    return null;
+  }
+
+  if (result.regionId) {
+    syncRegionMediaToToken(token, result.regionId);
+  }
+
+  return result.regionId;
+}
+
+function syncRegionMediaToToken(token, regionId) {
+  if (!regionId) return;
+  const record = activeMediaByRegion.get(regionId);
+  if (!record || !record.init) return;
+
+  const context = {};
+  if (record.sessionId != null) {
+    context.sessionId = record.sessionId;
+  }
+
+  const initPayload = { ...record.init, resume: true };
+  sendToClientByToken(token, initPayload, context);
+
+  const state = record.state || {};
+  const now = Date.now();
+  if (state.status === "playing") {
+    const positionMs = Math.max(now - (state.startedAtEpochMs ?? now), 0);
+    sendToClientByToken(token, {
+      type: "VIDEO_PLAY",
+      serverEpochMs: now,
+      atMs: positionMs,
+      volume: state.volume,
+      muted: state.muted,
+      autoclose: state.autoclose ?? record.init?.autoclose ?? false,
+    }, context);
+  } else if (state.status === "paused") {
+    sendToClientByToken(token, {
+      type: "VIDEO_PAUSE",
+      atMs: state.pausedAtMs ?? 0,
+      volume: state.volume,
+      muted: state.muted,
+      autoclose: state.autoclose ?? record.init?.autoclose ?? false,
+    }, context);
+  }
 }
 
 function handleClientVideoState(token, message = {}) {
@@ -223,13 +456,21 @@ function handleClientVideoState(token, message = {}) {
 
   const shouldAutoclose = Boolean(state.autoclose ?? record.init?.autoclose ?? false);
   if (shouldAutoclose && (message.state === "ended" || message.state === "idle")) {
-    registerMediaCommand(token, { type: "VIDEO_CLOSE" });
+    registerMediaCommand(activeMediaByToken, token, { type: "VIDEO_CLOSE" });
+    const regionId = regionByToken.get(token);
+    if (regionId) {
+      const regionRecord = activeMediaByRegion.get(regionId);
+      const regionAutoclose = Boolean(regionRecord?.state?.autoclose ?? regionRecord?.init?.autoclose ?? false);
+      if (regionAutoclose) {
+        sendToRegion(regionId, { type: "VIDEO_CLOSE" });
+      }
+    }
   }
 }
 
 function sendToClientByToken(token, payload, context) {
   if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
-    registerMediaCommand(token, payload, context);
+    registerMediaCommand(activeMediaByToken, token, payload, context);
   }
   const c = clientsByToken.get(token);
   if (c && c.ws.readyState === 1) {
@@ -244,7 +485,7 @@ function sendToClientByPlayer(playerId, payload, context) {
     if (!c || c.ws.readyState !== 1) continue;
     if (c.playerId && c.playerId === playerId) {
       if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
-        registerMediaCommand(token, payload, context);
+        registerMediaCommand(activeMediaByToken, token, payload, context);
       }
       c.ws.send(JSON.stringify(payload));
       return true;
@@ -252,14 +493,14 @@ function sendToClientByPlayer(playerId, payload, context) {
     if (lowered) {
       if (c.playerUuid && c.playerUuid.toLowerCase() === lowered) {
         if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
-          registerMediaCommand(token, payload, context);
+          registerMediaCommand(activeMediaByToken, token, payload, context);
         }
         c.ws.send(JSON.stringify(payload));
         return true;
       }
       if (c.playerName && c.playerName.toLowerCase() === lowered) {
         if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
-          registerMediaCommand(token, payload, context);
+          registerMediaCommand(activeMediaByToken, token, payload, context);
         }
         c.ws.send(JSON.stringify(payload));
         return true;
@@ -267,7 +508,7 @@ function sendToClientByPlayer(playerId, payload, context) {
     }
     if (token === playerId) {
       if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
-        registerMediaCommand(token, payload, context);
+        registerMediaCommand(activeMediaByToken, token, payload, context);
       }
       c.ws.send(JSON.stringify(payload));
       return true;
@@ -276,19 +517,64 @@ function sendToClientByPlayer(playerId, payload, context) {
   return false;
 }
 
+function sendToRegion(regionId, payload, context = {}, options = {}) {
+  if (typeof regionId !== "string") return false;
+  const trimmed = regionId.trim();
+  if (!trimmed) return false;
+  const canonical = trimmed.toLowerCase();
+  if (options.displayName) {
+    rememberRegionDisplayName(canonical, options.displayName);
+  } else if (!regionDisplayNames.has(canonical)) {
+    rememberRegionDisplayName(canonical, trimmed);
+  }
+
+  if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+    registerMediaCommand(activeMediaByRegion, canonical, payload, context);
+  }
+
+  let delivered = false;
+  const members = tokensByRegion.get(canonical);
+  if (members) {
+    for (const token of members) {
+      const ok = sendToClientByToken(token, payload, context);
+      delivered = delivered || ok;
+    }
+  }
+  return delivered;
+}
+
 function resolveTarget(body = {}) {
   const {
     token,
     playerId,
     playerUuid,
     playerName,
+    regionId,
   } = body;
+
+  const regionTarget = normalizeRegionId(regionId);
+  if (regionTarget) return { kind: "region", value: regionTarget };
 
   if (token) return { kind: "token", value: token };
 
   const playerKey = playerId || playerUuid || playerName;
-  if (playerKey) return { kind: "player", value: playerKey };
+  if (playerKey) {
+    let source = null;
+    if (playerId) source = "playerId";
+    else if (playerUuid) source = "playerUuid";
+    else if (playerName) source = "playerName";
+    return { kind: "player", value: playerKey, source };
+  }
 
+  return null;
+}
+
+function resolvePlayerReference(body = {}) {
+  const { token, playerId, playerUuid, playerName } = body;
+  if (typeof token === "string" && token) return { kind: "token", value: token, source: "token" };
+  if (typeof playerId === "string" && playerId.trim()) return { kind: "player", value: playerId, source: "playerId" };
+  if (typeof playerUuid === "string" && playerUuid.trim()) return { kind: "player", value: playerUuid, source: "playerUuid" };
+  if (typeof playerName === "string" && playerName.trim()) return { kind: "player", value: playerName, source: "playerName" };
   return null;
 }
 
@@ -316,14 +602,125 @@ function updateClientIdentity(token, patch = {}) {
   }
 
   info.lastSeen = Date.now();
+
+  applyRegionForClient(token, info);
 }
+
+app.post("/set-region", (req, res) => {
+  const body = req.body || {};
+  const target = resolvePlayerReference(body);
+  if (!target) {
+    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+  }
+
+  let regionSpecified = false;
+  let desiredRegion = null;
+  let displayName = body.regionDisplayName || body.regionName || body.regionLabel || null;
+
+  if (Object.prototype.hasOwnProperty.call(body, "region")) {
+    regionSpecified = true;
+    const value = body.region;
+    if (value == null || (typeof value === "string" && !value.trim())) {
+      desiredRegion = null;
+    } else if (typeof value === "string") {
+      displayName = displayName || value;
+      desiredRegion = normalizeRegionId(value, { displayName });
+    } else {
+      return res.status(400).json({ error: "region must be a string or null" });
+    }
+  } else if (Object.prototype.hasOwnProperty.call(body, "regionId")) {
+    regionSpecified = true;
+    const value = body.regionId;
+    if (value == null || (typeof value === "string" && !value.trim())) {
+      desiredRegion = null;
+    } else if (typeof value === "string") {
+      displayName = displayName || value;
+      desiredRegion = normalizeRegionId(value, { displayName });
+    } else {
+      return res.status(400).json({ error: "regionId must be a string or null" });
+    }
+  }
+
+  if (!regionSpecified) {
+    return res.status(400).json({ error: "region or regionId required" });
+  }
+
+  const response = { ok: true, target: target.kind };
+
+  if (target.kind === "token") {
+    const token = target.value;
+    const info = clientsByToken.get(token);
+    const result = assignRegionForToken(token, desiredRegion, { alreadyCanonical: true, displayName });
+    response.changed = result.changed;
+    response.regionId = result.regionId;
+    response.previousRegionId = result.previous;
+    response.regionDisplayName = result.regionId ? getRegionDisplayName(result.regionId) : null;
+
+    if (info) {
+      const keys = collectPlayerKeysFromInfo(info);
+      assignRegionForPlayerKeys(keys, result.regionId);
+      if (result.changed) {
+        if (result.regionId) {
+          syncRegionMediaToToken(token, result.regionId);
+        } else if (result.previous) {
+          sendToClientByToken(token, { type: "VIDEO_CLOSE" });
+        }
+      }
+    }
+  } else if (target.kind === "player") {
+    const canonicalKey = canonicalizePlayerKey(
+      target.source === "playerUuid" ? "uuid" : target.source === "playerName" ? "name" : "id",
+      target.value,
+    );
+    if (!canonicalKey) {
+      return res.status(400).json({ error: `invalid ${target.source || "playerId"}` });
+    }
+
+    assignRegionForPlayerKey(canonicalKey, desiredRegion);
+    const extraKeys = collectPlayerKeysFromBody(body).filter((key) => key && key !== canonicalKey);
+    assignRegionForPlayerKeys(extraKeys, desiredRegion);
+
+    const affectedTokens = [];
+    const candidates = collectTokensForPlayer(target.value, target.source || "playerId");
+    for (const token of candidates) {
+      const result = assignRegionForToken(token, desiredRegion, { alreadyCanonical: true, displayName });
+      affectedTokens.push({
+        token,
+        changed: result.changed,
+        regionId: result.regionId,
+        previousRegionId: result.previous,
+      });
+      if (result.changed) {
+        if (result.regionId) {
+          syncRegionMediaToToken(token, result.regionId);
+        } else if (result.previous) {
+          sendToClientByToken(token, { type: "VIDEO_CLOSE" });
+        }
+      }
+    }
+
+    response.regionId = desiredRegion;
+    response.regionDisplayName = desiredRegion ? getRegionDisplayName(desiredRegion) : null;
+    response.affectedTokens = affectedTokens;
+  }
+
+  if (desiredRegion) {
+    response.regionId = desiredRegion;
+    response.regionDisplayName = getRegionDisplayName(desiredRegion);
+  } else {
+    response.regionId = null;
+    response.regionDisplayName = null;
+  }
+
+  return res.json(response);
+});
 
 // Example: init a video
 app.post("/admin/video/init", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const {
@@ -342,10 +739,25 @@ app.post("/admin/video/init", requireAdmin, (req, res) => {
     volume,
     autoclose: Boolean(body.autoclose),
   };
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload, { sessionId })
-    : sendToClientByPlayer(target.value, payload, { sessionId });
-  return res.json({ delivered: ok });
+  const context = {};
+  if (sessionId != null) context.sessionId = sessionId;
+
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload, context);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload, context);
+  } else if (target.kind === "region") {
+    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+    delivered = sendToRegion(target.value, payload, context, { displayName });
+  }
+
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 
 // Example: play/pause/seek/close
@@ -353,7 +765,7 @@ app.post("/admin/video/play", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const payload = { type: "VIDEO_PLAY", serverEpochMs: Date.now() };
@@ -361,58 +773,102 @@ app.post("/admin/video/play", requireAdmin, (req, res) => {
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
   if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload)
-    : sendToClientByPlayer(target.value, payload);
-  return res.json({ delivered: ok });
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload);
+  } else if (target.kind === "region") {
+    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+    delivered = sendToRegion(target.value, payload, {}, { displayName });
+  }
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 app.post("/admin/video/pause", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const { atMs } = body;
   const payload = { type: "VIDEO_PAUSE", atMs };
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload)
-    : sendToClientByPlayer(target.value, payload);
-  return res.json({ delivered: ok });
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload);
+  } else if (target.kind === "region") {
+    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+    delivered = sendToRegion(target.value, payload, {}, { displayName });
+  }
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 app.post("/admin/video/seek", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const { toMs } = body;
   const payload = { type: "VIDEO_SEEK", toMs };
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload)
-    : sendToClientByPlayer(target.value, payload);
-  return res.json({ delivered: ok });
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload);
+  } else if (target.kind === "region") {
+    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+    delivered = sendToRegion(target.value, payload, {}, { displayName });
+  }
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 app.post("/admin/video/close", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const payload = { type: "VIDEO_CLOSE" };
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload)
-    : sendToClientByPlayer(target.value, payload);
-  return res.json({ delivered: ok });
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload);
+  } else if (target.kind === "region") {
+    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+    delivered = sendToRegion(target.value, payload, {}, { displayName });
+  }
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 
 app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const {
@@ -442,12 +898,26 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     autoclose: Boolean(body.autoclose),
   };
 
-  const deliverInit = target.kind === "token"
-    ? sendToClientByToken(target.value, initPayload, { sessionId })
-    : sendToClientByPlayer(target.value, initPayload, { sessionId });
+  const initContext = {};
+  if (sessionId != null) initContext.sessionId = sessionId;
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+
+  let deliverInit = false;
+  if (target.kind === "token") {
+    deliverInit = sendToClientByToken(target.value, initPayload, initContext);
+  } else if (target.kind === "player") {
+    deliverInit = sendToClientByPlayer(target.value, initPayload, initContext);
+  } else if (target.kind === "region") {
+    deliverInit = sendToRegion(target.value, initPayload, initContext, { displayName });
+  }
 
   if (!deliverInit) {
-    return res.json({ delivered: false, stage: "init" });
+    const response = { delivered: false, stage: "init", target: target.kind };
+    if (target.kind === "region") {
+      response.regionId = target.value;
+      response.regionDisplayName = getRegionDisplayName(target.value);
+    }
+    return res.json(response);
   }
 
   const playPayload = {
@@ -461,18 +931,33 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     playPayload.autoclose = body.autoclose;
   }
 
-  const deliverPlay = target.kind === "token"
-    ? sendToClientByToken(target.value, playPayload)
-    : sendToClientByPlayer(target.value, playPayload);
+  let deliverPlay = false;
+  if (target.kind === "token") {
+    deliverPlay = sendToClientByToken(target.value, playPayload);
+  } else if (target.kind === "player") {
+    deliverPlay = sendToClientByPlayer(target.value, playPayload);
+  } else if (target.kind === "region") {
+    deliverPlay = sendToRegion(target.value, playPayload, {}, { displayName });
+  }
 
-  return res.json({ delivered: deliverInit && deliverPlay, stage: deliverPlay ? "play" : "init" });
+  const response = {
+    delivered: deliverInit && deliverPlay,
+    stage: deliverPlay ? "play" : "init",
+    target: target.kind,
+  };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+
+  return res.json(response);
 });
 
 app.post("/admin/video/preload", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const { url } = body;
@@ -486,18 +971,29 @@ app.post("/admin/video/preload", requireAdmin, (req, res) => {
 
   const context = {};
   if (body.sessionId != null) context.sessionId = body.sessionId;
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload, context)
-    : sendToClientByPlayer(target.value, payload, context);
-  return res.json({ delivered: ok });
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload, context);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload, context);
+  } else if (target.kind === "region") {
+    delivered = sendToRegion(target.value, payload, context, { displayName });
+  }
+  const response = { delivered, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+  return res.json(response);
 });
 
 app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
   const body = req.body || {};
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
   }
 
   const rawItems = Array.isArray(body.items) ? body.items : [];
@@ -524,12 +1020,24 @@ app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
 
   const context = {};
   if (body.sessionId != null) context.sessionId = body.sessionId;
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload, context)
-    : sendToClientByPlayer(target.value, payload, context);
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload, context);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload, context);
+  } else if (target.kind === "region") {
+    delivered = sendToRegion(target.value, payload, context, { displayName });
+  }
 
-  return res.json({ delivered: ok, count: items.length });
+  const response = { delivered, count: items.length, target: target.kind };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+
+  return res.json(response);
 });
 
 app.get("/admin/video/connections", requireAdmin, (_req, res) => {
@@ -541,6 +1049,8 @@ app.get("/admin/video/connections", requireAdmin, (_req, res) => {
     playerName: info.playerName,
     publicServerKey: info.publicServerKey,
     scope: info.scope,
+    region: info.region || null,
+    regionDisplayName: info.region ? getRegionDisplayName(info.region) : null,
     connectedAt: info.connectedAt,
     lastSeen: info.lastSeen,
     readyState: info.ws?.readyState,
@@ -559,6 +1069,52 @@ app.get("/admin/video/connections", requireAdmin, (_req, res) => {
   return res.json({ ok: true, connections });
 });
 
+app.get("/admin/video/regions", requireAdmin, (_req, res) => {
+  const regionIds = new Set();
+  for (const key of tokensByRegion.keys()) regionIds.add(key);
+  for (const key of activeMediaByRegion.keys()) regionIds.add(key);
+
+  const regions = Array.from(regionIds).map((regionId) => {
+    const displayName = getRegionDisplayName(regionId);
+    const members = Array.from(tokensByRegion.get(regionId) || []).map((token) => {
+      const info = clientsByToken.get(token);
+      return {
+        token,
+        playerId: info?.playerId || null,
+        playerUuid: info?.playerUuid || null,
+        playerName: info?.playerName || null,
+        connected: Boolean(info && info.ws?.readyState === 1),
+        lastSeen: info?.lastSeen ?? null,
+      };
+    });
+
+    const record = activeMediaByRegion.get(regionId);
+    const activeMedia = (() => {
+      if (!record || !record.state || record.state.status === "idle") return null;
+      return {
+        sessionId: record.sessionId || null,
+        init: snapshotPayload(record.init),
+        state: snapshotPayload(record.state),
+        lastUpdate: record.lastUpdate,
+        preload: snapshotPayload(record.preload),
+        playlist: snapshotPayload(record.playlist),
+        lastCommand: snapshotPayload(record.lastCommand),
+      };
+    })();
+
+    return {
+      regionId,
+      displayName,
+      memberCount: members.length,
+      members,
+      activeMedia,
+      lastUpdate: record?.lastUpdate || null,
+    };
+  });
+
+  return res.json({ ok: true, regions });
+});
+
 // Simple health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
@@ -566,6 +1122,17 @@ const server = http.createServer(app);
 
 // --- WebSocket server ---
 const wss = new WebSocketServer({ noServer: true });
+
+function resetInMemoryStores() {
+  clientsByToken.clear();
+  tokenToPlayerId.clear();
+  activeMediaByToken.clear();
+  activeMediaByRegion.clear();
+  tokensByRegion.clear();
+  regionByToken.clear();
+  regionByPlayerKey.clear();
+  regionDisplayNames.clear();
+}
 
 // Optional: keep-alive ping from server
 function heartbeat(ws) {
@@ -599,6 +1166,8 @@ wss.on("connection", async (ws, request) => {
     scope: null,
     connectedAt: Date.now(),
     lastSeen: Date.now(),
+    region: null,
+    regionDisplayName: null,
   });
   tokenToPlayerId.set(token, playerId);
 
@@ -639,6 +1208,8 @@ wss.on("connection", async (ws, request) => {
     }
   }
 
+  applyRegionForClient(token, clientsByToken.get(token));
+
   const pingIv = setInterval(() => heartbeat(ws), 5000);
 
   ws.on("message", (data) => {
@@ -671,6 +1242,7 @@ wss.on("connection", async (ws, request) => {
   ws.on("close", () => {
     clearInterval(pingIv);
     // Cleanup
+    assignRegionForToken(token, null, { alreadyCanonical: true });
     clientsByToken.delete(token);
     tokenToPlayerId.delete(token);
   });
@@ -685,6 +1257,40 @@ server.on("upgrade", (req, socket, head) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  app,
+  server,
+  wss,
+  applyRegionForClient,
+  assignRegionForPlayerKey,
+  assignRegionForPlayerKeys,
+  assignRegionForToken,
+  canonicalizePlayerKey,
+  collectPlayerKeysFromBody,
+  collectPlayerKeysFromInfo,
+  collectTokensForPlayer,
+  getRegionForClient,
+  normalizeRegionId,
+  rememberRegionDisplayName,
+  registerMediaCommand,
+  sendToRegion,
+  sendToClientByToken,
+  syncRegionMediaToToken,
+  _internals: {
+    clientsByToken,
+    tokenToPlayerId,
+    activeMediaByToken,
+    activeMediaByRegion,
+    tokensByRegion,
+    regionByToken,
+    regionByPlayerKey,
+    regionDisplayNames,
+    resetInMemoryStores,
+  },
+};
