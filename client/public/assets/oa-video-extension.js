@@ -141,6 +141,22 @@
   let activePlaylist = null;
   let pendingModalReveal = false;
   let pendingPlayPayload = null;
+  let pendingPlayRetryTimer = null;
+
+  function clearPendingPlayRetry() {
+    if (pendingPlayRetryTimer) {
+      clearTimeout(pendingPlayRetryTimer);
+      pendingPlayRetryTimer = null;
+    }
+  }
+
+  function schedulePlayRetry(delayMs = 200) {
+    clearPendingPlayRetry();
+    pendingPlayRetryTimer = setTimeout(() => {
+      pendingPlayRetryTimer = null;
+      safePlay();
+    }, Math.max(0, delayMs));
+  }
 
   function schedulePendingInit() {
     if (!pendingInitPayload || !autoplayReady) return null;
@@ -393,6 +409,7 @@
   }
   function hideModal() {
     if (!ui) return;
+    clearPendingPlayRetry();
     exitFullscreen();
     ui.backdrop.style.display = 'none';
     suppressPauseEvent = true;
@@ -612,12 +629,19 @@
 
   function safePlay() {
     if (!ui || !ui.video) return;
+    clearPendingPlayRetry();
     suppressPlayEvent = true;
     queuedPlayRequest = false;
     const playPromise = ui.video.play();
     if (playPromise && typeof playPromise.then === 'function') {
       playPromise.catch((err) => {
-        dbg('Autoplay prevented or failed', err?.name || err);
+        const errorName = err?.name || '';
+        dbg('Autoplay prevented or failed', errorName || err);
+        if (errorName === 'AbortError') {
+          dbg('Playback aborted during start; retrying shortly');
+          schedulePlayRetry(250);
+          return;
+        }
         queuedPlayRequest = true;
         setStatus('Waiting for activation');
       }).finally(() => {
@@ -630,6 +654,7 @@
 
   function safePause() {
     if (!ui || !ui.video) return;
+    clearPendingPlayRetry();
     suppressPauseEvent = true;
     ui.video.pause();
     queueMicrotask(() => { suppressPauseEvent = false; });
