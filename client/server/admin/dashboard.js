@@ -2,7 +2,9 @@
   const state = {
     adminKey: localStorage.getItem('oaVideoAdminKey') || '',
     pollTimer: null,
-    lastData: [],
+    lastConnections: [],
+    lastRegions: [],
+    activeTab: 'connections',
   };
 
   const basePath = (() => {
@@ -22,7 +24,12 @@
   const connCountEl = document.getElementById('connCount');
   const activeCountEl = document.getElementById('activeCount');
   const lastRefreshEl = document.getElementById('lastRefresh');
-  const tbody = document.getElementById('connectionsBody');
+  const regionCountEl = document.getElementById('regionCount');
+  const connectionsBody = document.getElementById('connectionsBody');
+  const regionsBody = document.getElementById('regionsBody');
+  const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
+  const connectionsSection = document.getElementById('connectionsSection');
+  const regionsSection = document.getElementById('regionsSection');
   const modal = document.getElementById('authModal');
   const modalAdminKey = document.getElementById('modalAdminKey');
   const modalApply = document.getElementById('modalApply');
@@ -37,6 +44,27 @@
   let pendingPlayTarget = null;
 
   adminKeyInput.value = state.adminKey;
+
+  function setActiveTab(tab) {
+    state.activeTab = tab;
+    if (tabButtons.length) {
+      tabButtons.forEach((button) => {
+        const targetTab = button.dataset.tab;
+        if (!targetTab) return;
+        if (targetTab === tab) {
+          button.classList.add('active');
+        } else {
+          button.classList.remove('active');
+        }
+      });
+    }
+    if (connectionsSection) {
+      connectionsSection.classList.toggle('hidden', tab !== 'connections');
+    }
+    if (regionsSection) {
+      regionsSection.classList.toggle('hidden', tab !== 'regions');
+    }
+  }
 
   function setStatus(message, variant = '') {
     statusText.textContent = message;
@@ -127,8 +155,36 @@
     return { url, autoclose: Boolean(autoclose) };
   }
 
-  function triggerPlay(connection, url, autoclose) {
-    if (!connection || !connection.token) return;
+  function getRegionDefaults(region) {
+    const media = region?.activeMedia || {};
+    const init = media.init || {};
+    const state = media.state || {};
+    const url = state.url || init.url || '';
+    const autoclose = state.autoclose ?? init.autoclose ?? false;
+    return { url, autoclose: Boolean(autoclose) };
+  }
+
+  function createConnectionTarget(connection) {
+    return {
+      kind: 'token',
+      token: connection.token,
+      sessionId: connection.activeMedia?.sessionId || null,
+      defaults: getConnectionDefaults(connection),
+    };
+  }
+
+  function createRegionTarget(region) {
+    return {
+      kind: 'region',
+      regionId: region.regionId,
+      regionDisplayName: region.displayName || null,
+      sessionId: region.activeMedia?.sessionId || null,
+      defaults: getRegionDefaults(region),
+    };
+  }
+
+  function triggerPlay(target, url, autoclose) {
+    if (!target) return;
     const trimmedUrl = (url || '').trim();
     if (!trimmedUrl) {
       alert('Please provide a video URL.');
@@ -141,18 +197,22 @@
       autoclose: Boolean(autoclose),
     };
 
-    if (connection.activeMedia?.sessionId) {
-      payload.sessionId = connection.activeMedia.sessionId;
+    if (target.sessionId && payload.sessionId == null) {
+      payload.sessionId = target.sessionId;
+    }
+
+    if (target.kind === 'region' && target.regionDisplayName) {
+      payload.regionDisplayName = target.regionDisplayName;
     }
 
     closePlayModal();
-    sendCommand('play-instant', connection.token, payload);
+    sendCommand('play-instant', target, payload);
   }
 
-  function openPlayModal(connection) {
-    pendingPlayTarget = connection;
+  function openPlayModalForTarget(target) {
+    pendingPlayTarget = target;
 
-    const defaults = getConnectionDefaults(connection);
+    const defaults = target?.defaults || { url: '', autoclose: false };
 
     if (!playModal || !playUrlInput || !playAutocloseInput) {
       const fallbackUrl = window.prompt('Video URL to play', defaults.url || '');
@@ -161,7 +221,7 @@
         return;
       }
       const fallbackAutoclose = window.confirm('Enable autoclose when playback finishes?');
-      triggerPlay(connection, fallbackUrl, fallbackAutoclose);
+      triggerPlay(target, fallbackUrl, fallbackAutoclose);
       return;
     }
 
@@ -181,25 +241,40 @@
     triggerPlay(pendingPlayTarget, url, autoclose);
   }
 
-  async function fetchConnections(showErrors = true) {
+  async function fetchDashboardData(showErrors = true) {
     if (!state.adminKey) {
-      renderRows([]);
+      renderConnectionRows([]);
+      renderRegionRows([]);
       setStatus('Enter the admin key to load data.');
       openAuthModal('');
       return;
     }
 
     try {
-      const response = await fetch(`${basePath}/admin/video/connections`, {
-        headers: getHeaders(),
-      });
-      if (!response.ok) {
-        throw new Error(`Request failed (${response.status})`);
+      const headers = getHeaders();
+      const [connectionsResp, regionsResp] = await Promise.all([
+        fetch(`${basePath}/admin/video/connections`, { headers }),
+        fetch(`${basePath}/admin/video/regions`, { headers }),
+      ]);
+      if (!connectionsResp.ok) {
+        throw new Error(`Connections request failed (${connectionsResp.status})`);
       }
-      const payload = await response.json();
-      const connections = payload.connections || [];
-      state.lastData = connections;
-      renderRows(connections);
+      if (!regionsResp.ok) {
+        throw new Error(`Regions request failed (${regionsResp.status})`);
+      }
+
+      const connectionsPayload = await connectionsResp.json();
+      const regionsPayload = await regionsResp.json();
+
+      const connections = connectionsPayload.connections || [];
+      const regions = regionsPayload.regions || [];
+
+      state.lastConnections = connections;
+      state.lastRegions = regions;
+
+      renderConnectionRows(connections);
+      renderRegionRows(regions);
+
       connCountEl.textContent = connections.length;
       const activeSessions = new Set(
         connections
@@ -207,28 +282,33 @@
           .filter((id) => typeof id === 'string' && id.length > 0)
       );
       activeCountEl.textContent = activeSessions.size;
+
+      if (regionCountEl) {
+        const activeRegions = regions.filter((region) => region.activeMedia).length;
+        regionCountEl.textContent = activeRegions;
+      }
+
       lastRefreshEl.textContent = new Date().toLocaleTimeString();
       setStatus(`Updated ${new Date().toLocaleTimeString()}`, 'ok');
     } catch (err) {
-      if (showErrors) alert(`Failed to load connections: ${err.message}`);
-      setStatus(`Failed to load connections (${err.message})`, 'error');
+      if (showErrors) alert(`Failed to load dashboard data: ${err.message}`);
+      setStatus(`Failed to load dashboard data (${err.message})`, 'error');
     }
   }
 
-  function renderRows(connections) {
-    tbody.innerHTML = '';
+  function renderConnectionRows(connections) {
+    connectionsBody.innerHTML = '';
     if (!connections.length) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
-      cell.colSpan = 9;
+      cell.colSpan = 10;
       cell.className = 'empty-state';
       cell.textContent = state.adminKey ? 'No active connections.' : 'Enter the admin key to load connections.';
       row.appendChild(cell);
-      tbody.appendChild(row);
+      connectionsBody.appendChild(row);
       return;
     }
 
-    const now = Date.now();
     connections.forEach((conn) => {
       const media = conn.activeMedia || null;
       const position = computePosition(media);
@@ -243,6 +323,15 @@
       const playerCell = document.createElement('td');
       playerCell.innerHTML = `<div>${conn.playerName || '—'}</div><div class="token" style="font-size:12px;color:var(--text-secondary)">${conn.playerUuid || '—'}</div>`;
       row.appendChild(playerCell);
+
+      const regionCell = document.createElement('td');
+      if (conn.region) {
+        const display = conn.regionDisplayName || conn.region;
+        regionCell.innerHTML = `<div>${display}</div><div class="token" style="font-size:12px;color:var(--text-secondary)">${conn.region}</div>`;
+      } else {
+        regionCell.textContent = '—';
+      }
+      row.appendChild(regionCell);
 
       const sessionCell = document.createElement('td');
       sessionCell.innerHTML = media?.sessionId
@@ -269,7 +358,7 @@
 
       const updatedCell = document.createElement('td');
       const lastUpdate = media?.state?.status === 'idle'
-        ? conn.lastSeenAt
+        ? conn.lastSeen
         : media?.state?.startedAtEpochMs || media?.state?.pausedAtMs || null;
       updatedCell.textContent = formatAgo(lastUpdate);
       row.appendChild(updatedCell);
@@ -280,35 +369,101 @@
       controls.forEach((control) => actionsCell.appendChild(control));
       row.appendChild(actionsCell);
 
-      tbody.appendChild(row);
+      connectionsBody.appendChild(row);
+    });
+  }
+
+  function renderRegionRows(regions) {
+    regionsBody.innerHTML = '';
+    if (!regions.length) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.className = 'empty-state';
+      cell.textContent = state.adminKey ? 'No regions with active media.' : 'Enter the admin key to load regions.';
+      row.appendChild(cell);
+      regionsBody.appendChild(row);
+      return;
+    }
+
+    regions.forEach((region) => {
+      const media = region.activeMedia || null;
+      const position = computePosition(media);
+      const autoclose = Boolean(media?.state?.autoclose);
+      const row = document.createElement('tr');
+
+      const nameCell = document.createElement('td');
+      const display = region.displayName || region.regionId || '—';
+      nameCell.innerHTML = `<div>${display}</div><div class="token" style="font-size:12px;color:var(--text-secondary)">${region.regionId || '—'}</div>`;
+      row.appendChild(nameCell);
+
+      const membersCell = document.createElement('td');
+      const members = Array.isArray(region.members) ? region.members : [];
+      const memberNames = members
+        .map((member) => member.playerName || member.playerUuid || member.playerId || member.token)
+        .filter(Boolean)
+        .slice(0, 3);
+      const memberLabel = memberNames.length ? memberNames.join(', ') : '—';
+      membersCell.innerHTML = `<div>${region.memberCount ?? members.length} connected</div><div class="token" style="font-size:12px;color:var(--text-secondary)">${memberLabel}</div>`;
+      row.appendChild(membersCell);
+
+      const statusCell = document.createElement('td');
+      statusCell.textContent = media?.state?.status || position.status;
+      row.appendChild(statusCell);
+
+      const positionCell = document.createElement('td');
+      positionCell.textContent = formatMs(position.positionMs);
+      row.appendChild(positionCell);
+
+      const volumeCell = document.createElement('td');
+      const volume = media?.state?.volume;
+      volumeCell.textContent = Number.isFinite(volume) ? `${Math.round(volume * 100)}%` : '—';
+      row.appendChild(volumeCell);
+
+      const autocloseCell = document.createElement('td');
+      autocloseCell.textContent = autoclose ? 'Yes' : 'No';
+      row.appendChild(autocloseCell);
+
+      const updatedCell = document.createElement('td');
+      updatedCell.textContent = formatAgo(region.lastUpdate || media?.lastUpdate || null);
+      row.appendChild(updatedCell);
+
+      const actionsCell = document.createElement('td');
+      actionsCell.className = 'actions';
+      const controls = createRegionControls(region);
+      controls.forEach((control) => actionsCell.appendChild(control));
+      row.appendChild(actionsCell);
+
+      regionsBody.appendChild(row);
     });
   }
 
   function createControls(connection) {
-    const { token, activeMedia } = connection;
     const items = [];
-    const isPlaying = activeMedia?.state?.status === 'playing';
-    const isPaused = activeMedia?.state?.status === 'paused';
-    const seekable = ['playing', 'paused', 'ready'].includes(activeMedia?.state?.status);
+    const target = createConnectionTarget(connection);
+    const status = connection.activeMedia?.state?.status;
+    const isPlaying = status === 'playing';
+    const isPaused = status === 'paused';
+    const seekable = ['playing', 'paused', 'ready'].includes(status);
 
     items.push(
-      createActionButton('Play', () => openPlayModal(connection), isPlaying, 'ghost')
+      createActionButton('Play', () => openPlayModalForTarget(target), isPlaying, 'ghost')
     );
     items.push(
-      createActionButton('Pause', () => sendCommand('pause', token), isPaused, 'ghost')
+      createActionButton('Pause', () => sendCommand('pause', target), isPaused, 'ghost')
     );
     items.push(
-      createActionButton('Stop', () => sendCommand('close', token), false, 'danger')
+      createActionButton('Stop', () => sendCommand('close', target), false, 'danger')
     );
 
     if (seekable) {
-      items.push(createSeekControl(token));
+      items.push(createSeekControl(target));
     }
 
     return items;
   }
 
-  function createSeekControl(token) {
+  function createSeekControl(target) {
     const container = document.createElement('div');
 
     const input = document.createElement('input');
@@ -322,12 +477,37 @@
         alert('Invalid seek value. Use seconds or mm:ss format.');
         return;
       }
-      sendCommand('seek', token, { toMs: value });
+      sendCommand('seek', target, { toMs: value });
     });
 
     container.appendChild(input);
     container.appendChild(button);
     return container;
+  }
+
+  function createRegionControls(region) {
+    const items = [];
+    const target = createRegionTarget(region);
+    const status = region.activeMedia?.state?.status;
+    const isPlaying = status === 'playing';
+    const isPaused = status === 'paused';
+    const seekable = ['playing', 'paused', 'ready'].includes(status);
+
+    items.push(
+      createActionButton('Play', () => openPlayModalForTarget(target), isPlaying, 'ghost')
+    );
+    items.push(
+      createActionButton('Pause', () => sendCommand('pause', target), isPaused, 'ghost')
+    );
+    items.push(
+      createActionButton('Stop', () => sendCommand('close', target), false, 'danger')
+    );
+
+    if (seekable) {
+      items.push(createSeekControl(target));
+    }
+
+    return items;
   }
 
   function createActionButton(label, handler, disabled = false, variant = 'ghost') {
@@ -359,22 +539,39 @@
     return numeric * 1000;
   }
 
-  async function sendCommand(type, token, extra = {}) {
+  async function sendCommand(type, target, extra = {}) {
     if (!state.adminKey) {
       openAuthModal('');
       alert('Set the admin key first.');
       return;
     }
+
+    const resolvedTarget = typeof target === 'string' ? { token: target } : (target || {});
+
     try {
+      const body = { ...extra };
+      if (resolvedTarget.token) {
+        body.token = resolvedTarget.token;
+      }
+      if (resolvedTarget.regionId) {
+        body.regionId = resolvedTarget.regionId;
+        if (resolvedTarget.regionDisplayName) {
+          body.regionDisplayName = resolvedTarget.regionDisplayName;
+        }
+      }
+      if (resolvedTarget.sessionId != null && body.sessionId == null) {
+        body.sessionId = resolvedTarget.sessionId;
+      }
+
       const response = await fetch(`${basePath}/admin/video/${type}`, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ token, ...extra }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) {
         throw new Error(`Request failed (${response.status})`);
       }
-      await fetchConnections(false);
+      await fetchDashboardData(false);
     } catch (err) {
       alert(`Command failed: ${err.message}`);
     }
@@ -386,7 +583,11 @@
     if (!trimmed) {
       localStorage.removeItem('oaVideoAdminKey');
       setStatus('Admin key cleared.');
-      renderRows([]);
+      renderConnectionRows([]);
+      renderRegionRows([]);
+      connCountEl.textContent = '0';
+      activeCountEl.textContent = '0';
+      if (regionCountEl) regionCountEl.textContent = '0';
       openAuthModal('');
       return;
     }
@@ -394,7 +595,7 @@
     adminKeyInput.value = trimmed;
     closeAuthModal();
     setStatus('Key applied. Fetching…');
-    fetchConnections(true);
+    fetchDashboardData(true);
   }
 
   applyKeyBtn.addEventListener('click', () => {
@@ -463,29 +664,45 @@
     }
   });
 
+  if (tabButtons.length) {
+    tabButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const tab = button.dataset.tab;
+        if (!tab || tab === state.activeTab) return;
+        setActiveTab(tab);
+      });
+    });
+  }
+
   if (logoutKeyBtn) {
     logoutKeyBtn.addEventListener('click', () => {
       localStorage.removeItem('oaVideoAdminKey');
       state.adminKey = '';
       adminKeyInput.value = '';
-      renderRows([]);
+      renderConnectionRows([]);
+      renderRegionRows([]);
+      connCountEl.textContent = '0';
+      activeCountEl.textContent = '0';
+      if (regionCountEl) regionCountEl.textContent = '0';
       setStatus('Admin key removed.');
       openAuthModal('');
     });
   }
 
-  refreshBtn.addEventListener('click', () => fetchConnections(true));
+  setActiveTab(state.activeTab);
+
+  refreshBtn.addEventListener('click', () => fetchDashboardData(true));
 
   if (state.adminKey) {
     setStatus('Using stored admin key. Fetching…');
-    fetchConnections(false);
+    fetchDashboardData(false);
   } else {
     openAuthModal('');
   }
 
   state.pollTimer = setInterval(() => {
     if (!document.hidden) {
-      fetchConnections(false);
+      fetchDashboardData(false);
     }
   }, 5000);
 })();
