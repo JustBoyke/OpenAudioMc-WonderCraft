@@ -403,9 +403,12 @@ function applyRegionForClient(token, info = clientsByToken.get(token)) {
 }
 
 function syncRegionMediaToToken(token, regionId) {
-  if (!regionId) return;
+  if (!regionId) return false;
   const record = activeMediaByRegion.get(regionId);
-  if (!record || !record.init) return;
+  if (!record || !record.init) {
+    sendToClientByToken(token, { type: "VIDEO_CLOSE" });
+    return false;
+  }
 
   const context = {};
   if (record.sessionId != null) {
@@ -436,6 +439,7 @@ function syncRegionMediaToToken(token, regionId) {
       autoclose: state.autoclose ?? record.init?.autoclose ?? false,
     }, context);
   }
+  return true;
 }
 
 function handleClientVideoState(token, message = {}) {
