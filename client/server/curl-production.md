@@ -84,3 +84,17 @@ curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play \
   -H "x-admin-key: changeme" \
   -d '{"playerId":"PLAYER_ID_HERE"}'
 ```
+
+---
+
+## Minecraft Plugin WebSocket (Production)
+
+For production servers the plugin connects to the API host via WebSocket:
+
+* **Endpoint:** `wss://audio.boykevanvugt.nl/api/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+* **Token:** use the `PLUGIN_TOKEN` configured on the server (matches the `.env` value). Connections with an incorrect token are
+  closed immediately.
+
+Once connected you can send the same JSON payloads as the REST helpers (`SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`,
+`VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`). The server responds with
+`PLUGIN_RESPONSE` messages mirroring the REST status/body.
