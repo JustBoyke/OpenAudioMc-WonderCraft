@@ -62,6 +62,8 @@ function ensureMediaRecord(token) {
       sessionId: null,
       lastCommand: null,
       lastUpdate: 0,
+      preload: null,
+      playlist: null,
     };
     activeMediaByToken.set(token, record);
   }
@@ -96,6 +98,8 @@ function registerMediaCommand(token, payload, context = {}) {
 
   switch (payload.type) {
     case "VIDEO_INIT": {
+      record.playlist = null;
+      record.preload = null;
       const startAt = (typeof cloned.startAtEpochMs === "number" && Number.isFinite(cloned.startAtEpochMs))
         ? cloned.startAtEpochMs
         : now;
@@ -110,6 +114,25 @@ function registerMediaCommand(token, payload, context = {}) {
         volume: cloned.volume ?? 1.0,
         url: cloned.url,
         autoclose: Boolean(cloned.autoclose),
+      };
+      record.lastCommand = cloned;
+      break;
+    }
+    case "VIDEO_PRELOAD": {
+      record.preload = {
+        url: cloned.url || null,
+        requestedAt: now,
+      };
+      record.lastCommand = cloned;
+      break;
+    }
+    case "VIDEO_PLAYLIST_INIT": {
+      const items = Array.isArray(cloned.items)
+        ? cloned.items.filter((item) => item && typeof item.url === 'string')
+        : [];
+      record.playlist = {
+        items,
+        createdAt: now,
       };
       record.lastCommand = cloned;
       break;
@@ -443,6 +466,70 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     : sendToClientByPlayer(target.value, playPayload);
 
   return res.json({ delivered: deliverInit && deliverPlay, stage: deliverPlay ? "play" : "init" });
+});
+
+app.post("/admin/video/preload", requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const target = resolveTarget(body);
+  if (!target) {
+    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+  }
+
+  const { url } = body;
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+
+  const payload = { type: "VIDEO_PRELOAD", url };
+  if (typeof body.volume === "number") payload.volume = body.volume;
+  if (typeof body.muted === "boolean") payload.muted = body.muted;
+
+  const context = {};
+  if (body.sessionId != null) context.sessionId = body.sessionId;
+
+  const ok = target.kind === "token"
+    ? sendToClientByToken(target.value, payload, context)
+    : sendToClientByPlayer(target.value, payload, context);
+  return res.json({ delivered: ok });
+});
+
+app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const target = resolveTarget(body);
+  if (!target) {
+    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+  }
+
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+  const items = rawItems
+    .map((item) => {
+      if (!item || typeof item !== "object" || !item.url) return null;
+      const normalized = { url: item.url };
+      if (typeof item.volume === "number") normalized.volume = item.volume;
+      if (typeof item.muted === "boolean") normalized.muted = item.muted;
+      if (typeof item.autoclose === "boolean") normalized.autoclose = item.autoclose;
+      if (Number.isFinite(item.atMs)) normalized.atMs = item.atMs;
+      return normalized;
+    })
+    .filter((entry) => entry != null);
+
+  if (!items.length) {
+    return res.status(400).json({ error: "items array with at least one entry required" });
+  }
+
+  const payload = {
+    type: "VIDEO_PLAYLIST_INIT",
+    items,
+  };
+
+  const context = {};
+  if (body.sessionId != null) context.sessionId = body.sessionId;
+
+  const ok = target.kind === "token"
+    ? sendToClientByToken(target.value, payload, context)
+    : sendToClientByPlayer(target.value, payload, context);
+
+  return res.json({ delivered: ok, count: items.length });
 });
 
 app.get("/admin/video/connections", requireAdmin, (_req, res) => {
