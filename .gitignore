@@ -32,6 +32,7 @@ javadoc/
 // ignore .html, except for the client directory
 *.html
 !client/*.html
+!client/**/*.html
 
 .gradle/
 **/build/

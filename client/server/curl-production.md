@@ -1,15 +1,15 @@
-# Video Control cURL Cheatsheet
+# Video Control cURL Cheatsheet (Production)
 
-All commands target the local development server (`http://localhost:8080`).
+All commands target the production backend (`https://audio.boykevanvugt.nl/api`).
 Every request requires the admin header (`x-admin-key: changeme`).
 
-Replace the `TOKEN_HERE` or `PLAYER_ID_HERE` placeholders with the values you want to target. If you are testing with the client we wired up, you can grab the current token from DevTools via `window.__oaVideoExtensionDebug.wsUrl()`.
+Replace the `TOKEN_HERE` / `PLAYER_ID_HERE` placeholders with the identifiers you want to target. The same payload rules apply as in development—send only one identifier per call.
 
 ---
 
 ## Initialise a Video
 ```sh
-curl -X POST http://localhost:8080/admin/video/init \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/init \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{
@@ -25,7 +25,7 @@ curl -X POST http://localhost:8080/admin/video/init \
 
 ## Play
 ```sh
-curl -X POST http://localhost:8080/admin/video/play \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE", "autoclose": false}'
@@ -33,7 +33,7 @@ curl -X POST http://localhost:8080/admin/video/play \
 
 ## Pause
 ```sh
-curl -X POST http://localhost:8080/admin/video/pause \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/pause \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE", "atMs": 15000}'
@@ -41,7 +41,7 @@ curl -X POST http://localhost:8080/admin/video/pause \
 
 ## Seek
 ```sh
-curl -X POST http://localhost:8080/admin/video/seek \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/seek \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE", "toMs": 45000}'
@@ -49,7 +49,7 @@ curl -X POST http://localhost:8080/admin/video/seek \
 
 ## Play Instant (init + play)
 ```sh
-curl -X POST http://localhost:8080/admin/video/play-instant \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play-instant \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{
@@ -64,7 +64,7 @@ curl -X POST http://localhost:8080/admin/video/play-instant \
 
 ## Close
 ```sh
-curl -X POST http://localhost:8080/admin/video/close \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/close \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE"}'
@@ -72,14 +72,14 @@ curl -X POST http://localhost:8080/admin/video/close \
 
 ## List Connections
 ```sh
-curl http://localhost:8080/admin/video/connections \
+curl https://audio.boykevanvugt.nl/api/admin/video/connections \
   -H "x-admin-key: changeme"
 ```
 
 ### Optional: Target by Player ID
 All endpoints also accept `playerId` instead of `token`:
 ```sh
-curl -X POST http://localhost:8080/admin/video/play \
+curl -X POST https://audio.boykevanvugt.nl/api/admin/video/play \
   -H "Content-Type: application/json" \
   -H "x-admin-key: changeme" \
   -d '{"playerId":"PLAYER_ID_HERE"}'

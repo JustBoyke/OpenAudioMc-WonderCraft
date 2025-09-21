@@ -3,6 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const http = require("http");
+const path = require("path");
 const { WebSocketServer } = require("ws");
 
 // --- Config ---
@@ -19,6 +20,7 @@ app.use(express.json());
 // In-memory stores (replace with Redis if you want multiple instances)
 const clientsByToken = new Map(); // token -> { ws, playerId, lastSeen }
 const tokenToPlayerId = new Map(); // optional helper if you map tokens => playerId
+const activeMediaByToken = new Map(); // token -> media state snapshot
 // In practice, you should authenticate and map token -> unique player identity.
 
 // --- Token validation (STUB) ---
@@ -32,6 +34,8 @@ async function validateOAToken(token) {
   return { ok: true, playerId: fakePlayerId };
 }
 
+const ADMIN_STATIC_DIR = path.join(__dirname, "admin");
+
 // --- HTTP admin endpoints (you can protect with an admin secret) ---
 function requireAdmin(req, res, next) {
   const hdr = req.get("x-admin-key");
@@ -39,8 +43,149 @@ function requireAdmin(req, res, next) {
   return res.status(401).json({ error: "unauthorized" });
 }
 
-// Send a JSON command to a specific token or playerId
-function sendToClientByToken(token, payload) {
+app.use("/admin/static", express.static(ADMIN_STATIC_DIR));
+
+app.get("/admin/dashboard", (_req, res) => {
+  res.sendFile(path.join(ADMIN_STATIC_DIR, "dashboard.html"));
+});
+
+function snapshotPayload(payload) {
+  return payload ? JSON.parse(JSON.stringify(payload)) : payload;
+}
+
+function ensureMediaRecord(token) {
+  let record = activeMediaByToken.get(token);
+  if (!record) {
+    record = {
+      init: null,
+      state: { status: 'idle' },
+      sessionId: null,
+      lastCommand: null,
+      lastUpdate: 0,
+    };
+    activeMediaByToken.set(token, record);
+  }
+  return record;
+}
+
+function pruneStaleMedia(ttl = 15 * 60 * 1000) {
+  const cutoff = Date.now() - ttl;
+  for (const [token, record] of activeMediaByToken) {
+    if (!record?.lastUpdate || record.lastUpdate < cutoff) {
+      activeMediaByToken.delete(token);
+    }
+  }
+}
+
+function registerMediaCommand(token, payload, context = {}) {
+  if (!payload || typeof payload.type !== "string" || !payload.type.startsWith("VIDEO_")) return;
+
+  if (payload.type === "VIDEO_CLOSE") {
+    activeMediaByToken.delete(token);
+    return;
+  }
+
+  const now = Date.now();
+  const record = ensureMediaRecord(token);
+  record.lastUpdate = now;
+  if (context.sessionId != null) {
+    record.sessionId = context.sessionId;
+  }
+
+  const cloned = snapshotPayload(payload);
+
+  switch (payload.type) {
+    case "VIDEO_INIT": {
+      const startAt = (typeof cloned.startAtEpochMs === "number" && Number.isFinite(cloned.startAtEpochMs))
+        ? cloned.startAtEpochMs
+        : now;
+      cloned.startAtEpochMs = startAt;
+      cloned.autoclose = Boolean(cloned.autoclose);
+      record.init = cloned;
+      record.state = {
+        status: "ready",
+        startedAtEpochMs: startAt,
+        pausedAtMs: null,
+        muted: cloned.muted ?? false,
+        volume: cloned.volume ?? 1.0,
+        url: cloned.url,
+        autoclose: Boolean(cloned.autoclose),
+      };
+      record.lastCommand = cloned;
+      break;
+    }
+    case "VIDEO_PLAY": {
+      const state = record.state || {};
+      const atMs = Number.isFinite(cloned.atMs) ? cloned.atMs : Math.max(now - (state.startedAtEpochMs ?? now), 0);
+      const startedAtEpochMs = Number.isFinite(cloned.startAtEpochMs)
+        ? cloned.startAtEpochMs
+        : state.startedAtEpochMs ?? record.init?.startAtEpochMs ?? (now - atMs);
+      const autoclose = typeof cloned.autoclose === "boolean"
+        ? cloned.autoclose
+        : state.autoclose ?? record.init?.autoclose ?? false;
+      cloned.autoclose = autoclose;
+      record.state = {
+        ...state,
+        status: "playing",
+        startedAtEpochMs,
+        pausedAtMs: null,
+        muted: cloned.muted ?? state.muted ?? false,
+        volume: cloned.volume ?? state.volume ?? 1.0,
+        url: state.url ?? record.init?.url ?? null,
+        autoclose,
+      };
+      record.lastCommand = { ...cloned, atMs, startAtEpochMs, autoclose };
+      break;
+    }
+    case "VIDEO_PAUSE": {
+      const state = record.state || {};
+      const pausedAtMs = Number.isFinite(cloned.atMs) ? cloned.atMs : Math.max(now - (state.startedAtEpochMs ?? now), 0);
+      const autoclose = typeof cloned.autoclose === "boolean"
+        ? cloned.autoclose
+        : state.autoclose ?? record.init?.autoclose ?? false;
+      cloned.autoclose = autoclose;
+      record.state = {
+        ...state,
+        status: "paused",
+        pausedAtMs,
+        muted: cloned.muted ?? state.muted ?? false,
+        volume: cloned.volume ?? state.volume ?? 1.0,
+        autoclose,
+      };
+      record.lastCommand = { ...cloned, atMs: pausedAtMs, autoclose };
+      break;
+    }
+    case "VIDEO_SEEK": {
+      const state = record.state || {};
+      const toMs = Number.isFinite(cloned.toMs) ? cloned.toMs : 0;
+      const startedAtEpochMs = now - toMs;
+      const autoclose = typeof cloned.autoclose === "boolean"
+        ? cloned.autoclose
+        : state.autoclose ?? record.init?.autoclose ?? false;
+      cloned.autoclose = autoclose;
+      record.state = {
+        ...state,
+        status: "playing",
+        startedAtEpochMs,
+        pausedAtMs: null,
+        muted: cloned.muted ?? state.muted ?? false,
+        volume: cloned.volume ?? state.volume ?? 1.0,
+        autoclose,
+      };
+      record.lastCommand = { ...cloned, toMs, autoclose };
+      break;
+    }
+    default:
+      break;
+  }
+
+  pruneStaleMedia();
+}
+
+function sendToClientByToken(token, payload, context) {
+  if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+    registerMediaCommand(token, payload, context);
+  }
   const c = clientsByToken.get(token);
   if (c && c.ws.readyState === 1) {
     c.ws.send(JSON.stringify(payload));
@@ -48,25 +193,37 @@ function sendToClientByToken(token, payload) {
   }
   return false;
 }
-function sendToClientByPlayer(playerId, payload) {
+function sendToClientByPlayer(playerId, payload, context) {
   const lowered = typeof playerId === "string" ? playerId.toLowerCase() : null;
   for (const [token, c] of clientsByToken) {
     if (!c || c.ws.readyState !== 1) continue;
     if (c.playerId && c.playerId === playerId) {
+      if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+        registerMediaCommand(token, payload, context);
+      }
       c.ws.send(JSON.stringify(payload));
       return true;
     }
     if (lowered) {
       if (c.playerUuid && c.playerUuid.toLowerCase() === lowered) {
+        if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+          registerMediaCommand(token, payload, context);
+        }
         c.ws.send(JSON.stringify(payload));
         return true;
       }
       if (c.playerName && c.playerName.toLowerCase() === lowered) {
+        if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+          registerMediaCommand(token, payload, context);
+        }
         c.ws.send(JSON.stringify(payload));
         return true;
       }
     }
     if (token === playerId) {
+      if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
+        registerMediaCommand(token, payload, context);
+      }
       c.ws.send(JSON.stringify(payload));
       return true;
     }
@@ -129,12 +286,20 @@ app.post("/admin/video/init", requireAdmin, (req, res) => {
     startAtEpochMs,
     muted = false,
     volume = 1.0,
+    sessionId = null,
   } = body;
 
-  const payload = { type: "VIDEO_INIT", url, startAtEpochMs, muted, volume };
+  const payload = {
+    type: "VIDEO_INIT",
+    url,
+    startAtEpochMs,
+    muted,
+    volume,
+    autoclose: Boolean(body.autoclose),
+  };
   const ok = target.kind === "token"
-    ? sendToClientByToken(target.value, payload)
-    : sendToClientByPlayer(target.value, payload);
+    ? sendToClientByToken(target.value, payload, { sessionId })
+    : sendToClientByPlayer(target.value, payload, { sessionId });
   return res.json({ delivered: ok });
 });
 
@@ -147,6 +312,10 @@ app.post("/admin/video/play", requireAdmin, (req, res) => {
   }
 
   const payload = { type: "VIDEO_PLAY", serverEpochMs: Date.now() };
+  if (Number.isFinite(body.atMs)) payload.atMs = body.atMs;
+  if (typeof body.volume === "number") payload.volume = body.volume;
+  if (typeof body.muted === "boolean") payload.muted = body.muted;
+  if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
   const ok = target.kind === "token"
     ? sendToClientByToken(target.value, payload)
     : sendToClientByPlayer(target.value, payload);
@@ -207,6 +376,7 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     muted = false,
     volume = 1.0,
     startOffsetMs = 0,
+    sessionId = null,
   } = body;
 
   if (!url) {
@@ -224,11 +394,12 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     startAtEpochMs: computedStart,
     muted,
     volume,
+    autoclose: Boolean(body.autoclose),
   };
 
   const deliverInit = target.kind === "token"
-    ? sendToClientByToken(target.value, initPayload)
-    : sendToClientByPlayer(target.value, initPayload);
+    ? sendToClientByToken(target.value, initPayload, { sessionId })
+    : sendToClientByPlayer(target.value, initPayload, { sessionId });
 
   if (!deliverInit) {
     return res.json({ delivered: false, stage: "init" });
@@ -241,6 +412,9 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     muted,
     volume,
   };
+  if (typeof body.autoclose === "boolean") {
+    playPayload.autoclose = body.autoclose;
+  }
 
   const deliverPlay = target.kind === "token"
     ? sendToClientByToken(target.value, playPayload)
@@ -262,6 +436,16 @@ app.get("/admin/video/connections", requireAdmin, (_req, res) => {
     lastSeen: info.lastSeen,
     readyState: info.ws?.readyState,
     idleMs: info.lastSeen ? now - info.lastSeen : null,
+    activeMedia: (() => {
+      const media = activeMediaByToken.get(token);
+      if (!media || !media.state || media.state.status === 'idle') return null;
+      return {
+        sessionId: media.sessionId || null,
+        init: media.init || null,
+        state: media.state,
+        lastUpdate: media.lastUpdate,
+      };
+    })(),
   }));
   return res.json({ ok: true, connections });
 });
@@ -317,6 +501,34 @@ wss.on("connection", async (ws, request) => {
     playerName: hintedPlayerName || null,
     playerUuid: hintedPlayerUuid || null,
   }));
+
+  const pendingMedia = activeMediaByToken.get(token);
+  if (pendingMedia?.init) {
+    const initPayload = { ...pendingMedia.init, resume: true };
+    ws.send(JSON.stringify(initPayload));
+
+    const state = pendingMedia.state || {};
+    const now = Date.now();
+    if (state.status === 'playing') {
+      const positionMs = Math.max(now - (state.startedAtEpochMs ?? now), 0);
+      ws.send(JSON.stringify({
+        type: "VIDEO_PLAY",
+        serverEpochMs: now,
+        atMs: positionMs,
+        volume: state.volume,
+        muted: state.muted,
+        autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
+      }));
+    } else if (state.status === 'paused') {
+      ws.send(JSON.stringify({
+        type: "VIDEO_PAUSE",
+        atMs: state.pausedAtMs ?? 0,
+        volume: state.volume,
+        muted: state.muted,
+        autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
+      }));
+    }
+  }
 
   const pingIv = setInterval(() => heartbeat(ws), 5000);
 

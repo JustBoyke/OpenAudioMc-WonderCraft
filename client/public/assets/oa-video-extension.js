@@ -47,8 +47,15 @@
   const VIDEO_WS_URL = window.__OA_VIDEO_WS_URL || (() => {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const host = window.location.hostname || 'localhost';
-    const port = 8080;
-    return `${proto}://${host}:${port}/ws/video`;
+    const explicitPort = window.location.port;
+    const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(host) || Boolean(explicitPort);
+
+    if (isLocalHost) {
+      const port = window.__OA_VIDEO_WS_PORT || 8080;
+      return `${proto}://${host}:${port}/ws/video`;
+    }
+
+    return `${proto}://${host}/api/ws/video`;
   })();
 
   let ws = null;
@@ -127,6 +134,8 @@
   let identityCache = null;
   let identityHash = null;
   let identityWatcher = null;
+  let autoplayReady = window.__oaVideoAutoplayReady === true;
+  let queuedPlayRequest = false;
 
   function buildIdentityKey(identity) {
     if (!identity) return 'none';
@@ -168,6 +177,33 @@
     return identityCache;
   }
 
+  function flushQueuedPlay() {
+    if (!queuedPlayRequest || !autoplayReady) return queuedPlayRequest;
+    queuedPlayRequest = false;
+    setStatus('Starting…');
+    resyncToServerClock(true);
+    safePlay();
+    return queuedPlayRequest;
+  }
+
+  function setAutoplayReady(value) {
+    const ready = Boolean(value);
+    if (autoplayReady === ready) {
+      if (ready) flushQueuedPlay();
+      return;
+    }
+    autoplayReady = ready;
+    if (ready) {
+      flushQueuedPlay();
+    } else {
+      queuedPlayRequest = false;
+    }
+  }
+
+  window.addEventListener('oa-video-autoplay-ready', () => setAutoplayReady(true));
+  window.addEventListener('oa-video-autoplay-reset', () => setAutoplayReady(false));
+  setAutoplayReady(autoplayReady);
+
   // Optional: wait for OA client to be ready (you can wire this to OA’s actual ready event)
   function onReady(fn) {
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
@@ -185,7 +221,7 @@
     .oa-vid-header { display:flex; align-items:center; justify-content: space-between; padding: 10px 14px; background: #1b1b1b; }
     .oa-vid-header.is-hidden, .oa-vid-footer.is-hidden { display: none !important; }
     .oa-vid-title { font-size: 14px; opacity: .85; }
-    .oa-vid-body { background:#000; position:relative; flex:1; display:flex; }
+    .oa-vid-body { background:#000; position:relative; flex:1; display:flex; min-height:60vh; }
     .oa-vid-body.is-fullscreen { height: 100%; }
     .oa-vid-video { width: 100%; height: 100%; max-height: none; background:#000; object-fit: contain; }
     .oa-vid-footer { display:flex; align-items:center; justify-content: space-between; padding:8px 12px; background:#121212; min-height:36px; gap:8px; }
@@ -227,6 +263,7 @@
           <div class="oa-vid-status">Idle</div>
           <div class="oa-vid-actions">
             <button class="oa-vid-action" data-act="fullscreen">Fullscreen</button>
+            <button class="oa-vid-action" data-act="close">Close</button>
           </div>
         </div>
       </div>`;
@@ -239,6 +276,7 @@
     const video = backdrop.querySelector('.oa-vid-video');
     const status = backdrop.querySelector('.oa-vid-status');
     const fullscreenBtn = backdrop.querySelector('[data-act=fullscreen]');
+    const closeBtn = backdrop.querySelector('[data-act=close]');
 
     video.setAttribute('controlsList', 'nodownload noplaybackrate nofullscreen');
     video.setAttribute('disablePictureInPicture', 'true');
@@ -257,6 +295,7 @@
     });
 
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+    closeBtn.addEventListener('click', hideModal);
 
     return {
       backdrop,
@@ -267,6 +306,7 @@
       video,
       status,
       fullscreenBtn,
+      closeBtn,
     };
   }
 
@@ -297,27 +337,27 @@
     dbg('Modal shown');
   }
   function hideModal() {
-    if (ui) {
-      exitFullscreen();
-      ui.backdrop.style.display = 'none';
-      suppressPauseEvent = true;
-      ui.video.pause();
-      queueMicrotask(() => { suppressPauseEvent = false; });
-      seekVersion += 1;
-      ui.video.src = '';
-      serverPaused = false;
-      backendVolume = 1.0;
-      backendMuted = false;
-      lastAppliedVolume = null;
-      lastAppliedMuted = null;
-      stopVolumeSync();
-      syncFullscreenState();
-      desiredPositionMs = 0;
-      unbindFullscreenListeners();
-      toggleModalChrome(false);
-      setStatus('Idle');
-      dbg('Modal hidden');
-    }
+    if (!ui) return;
+    exitFullscreen();
+    ui.backdrop.style.display = 'none';
+    suppressPauseEvent = true;
+    ui.video.pause();
+    queueMicrotask(() => { suppressPauseEvent = false; });
+    seekVersion += 1;
+    ui.video.src = '';
+    serverPaused = false;
+    backendVolume = 1.0;
+    backendMuted = false;
+    playAutoclose = false;
+    lastAppliedVolume = null;
+    lastAppliedMuted = null;
+    stopVolumeSync();
+    syncFullscreenState();
+    desiredPositionMs = 0;
+    unbindFullscreenListeners();
+    toggleModalChrome(false);
+    setStatus('Idle');
+    dbg('Modal hidden');
   }
 
   // ---------- Clock sync + drift handling ----------
@@ -353,6 +393,10 @@
       exit: exitFullscreen,
       toggle: toggleFullscreen,
     },
+    autoplayReady: () => autoplayReady,
+    queuedPlay: () => queuedPlayRequest,
+    flushAutoplayQueue: () => flushQueuedPlay(),
+    resetAutoplayQueue: () => { queuedPlayRequest = false; },
   };
   window.__oaVideoExtensionDebug = debug;
   function connectWS(token, { force = false } = {}) {
@@ -440,6 +484,7 @@
   let fullscreenListenersBound = false;
   let suppressSeekGuard = false;
   let desiredPositionMs = 0;
+  let playAutoclose = false;
 
   const DEFAULT_CLIENT_VOLUME = 0.35;
 
@@ -508,9 +553,14 @@
   function safePlay() {
     if (!ui || !ui.video) return;
     suppressPlayEvent = true;
+    queuedPlayRequest = false;
     const playPromise = ui.video.play();
     if (playPromise && typeof playPromise.then === 'function') {
-      playPromise.catch((err) => dbg('Autoplay prevented or failed', err?.name || err)).finally(() => {
+      playPromise.catch((err) => {
+        dbg('Autoplay prevented or failed', err?.name || err);
+        queuedPlayRequest = true;
+        setStatus('Waiting for interaction');
+      }).finally(() => {
         suppressPlayEvent = false;
       });
     } else {
@@ -654,7 +704,7 @@
   }
 
   async function initVideo({
-    url, startAtEpochMs, muted = false, volume = 1.0,
+    url, startAtEpochMs, muted = false, volume = 1.0, autoclose = false,
   }) {
     dbg('Initializing video', { url, startAtEpochMs, muted, volume });
     showModal();
@@ -666,6 +716,7 @@
     lastAppliedMuted = null;
     startedAtEpochMs = normalizeStartEpoch(startAtEpochMs); // server time reference
     desiredPositionMs = 0;
+    playAutoclose = Boolean(autoclose);
 
     ui.video.src = sourceUrl;
 
@@ -715,6 +766,9 @@
       case 'VIDEO_PLAY':
         // Ensure position matches server’s intended timeline
         if (typeof msg.serverEpochMs === 'number') updateTimeOffsetFromPing(msg.serverEpochMs);
+        if (typeof msg.autoclose === 'boolean') {
+          playAutoclose = msg.autoclose;
+        }
         if (typeof msg.volume === 'number') {
           backendVolume = clamp01(msg.volume);
           lastAppliedVolume = null;
@@ -730,13 +784,23 @@
         }
         serverPaused = false;
         resyncToServerClock(true);
-        safePlay();
-        setStatus('Playing');
+        if (autoplayReady) {
+          queuedPlayRequest = false;
+          setStatus('Starting…');
+          safePlay();
+        } else {
+          queuedPlayRequest = true;
+          setStatus('Waiting for interaction');
+        }
         break;
 
       case 'VIDEO_PAUSE':
         serverPaused = true;
         exitFullscreen();
+        if (typeof msg.autoclose === 'boolean') {
+          playAutoclose = msg.autoclose;
+        }
+        queuedPlayRequest = false;
         if (typeof msg.volume === 'number') {
           backendVolume = clamp01(msg.volume);
           lastAppliedVolume = null;
@@ -759,6 +823,9 @@
 
       case 'VIDEO_SEEK':
         if (typeof msg.toMs === 'number') {
+          if (typeof msg.autoclose === 'boolean') {
+            playAutoclose = msg.autoclose;
+          }
           if (typeof msg.volume === 'number') {
             backendVolume = clamp01(msg.volume);
             lastAppliedVolume = null;
@@ -772,14 +839,21 @@
           updateStartEpochForPosition(msg.toMs);
           resyncToServerClock(true);
           serverPaused = false;
-          safePlay();
-          setStatus('Playing');
-          sendState('playing');
+          if (autoplayReady) {
+            queuedPlayRequest = false;
+            setStatus('Starting…');
+            safePlay();
+            sendState('playing');
+          } else {
+            queuedPlayRequest = true;
+            setStatus('Waiting for interaction');
+          }
         }
         break;
 
       case 'VIDEO_CLOSE':
         exitFullscreen();
+        queuedPlayRequest = false;
         hideModal();
         break;
 
@@ -801,6 +875,8 @@
     v.addEventListener('play', () => {
       const wasSuppressed = suppressPlayEvent;
       if (suppressPlayEvent) suppressPlayEvent = false;
+
+      queuedPlayRequest = false;
 
       if (serverPaused) {
         dbg('Blocking local play while server paused');
@@ -841,6 +917,9 @@
       exitFullscreen();
       setStatus('Ended');
       sendState('ended');
+      if (playAutoclose) {
+        hideModal();
+      }
     });
     v.addEventListener('seeking', () => {
       if (suppressSeekGuard) return;

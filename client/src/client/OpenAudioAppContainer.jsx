@@ -20,20 +20,48 @@ import { VERSION } from '../build';
 import { isValidHttps } from './util/sslcheck';
 import { SeededTestData } from './config/TestData';
 
+function emitVideoAutoplayEvent(name) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  try {
+    window.dispatchEvent(new Event(name));
+  } catch (err) {
+    if (typeof document !== 'undefined' && document.createEvent) {
+      const evt = document.createEvent('Event');
+      evt.initEvent(name, true, true);
+      window.dispatchEvent(evt);
+    }
+  }
+}
+
+if (typeof window !== 'undefined' && typeof window.__oaVideoAutoplayReady === 'undefined') {
+  window.__oaVideoAutoplayReady = false;
+}
+
 function publishVideoSession(session) {
-  if (session && session.token) {
-    window.__oaVideoSession = {
-      token: session.token,
-      playerName: session.name,
-      playerUuid: session.uuid,
-      publicServerKey: session.publicServerKey,
-      scope: session.scope,
-    };
-  } else {
-    delete window.__oaVideoSession;
+  if (typeof window !== 'undefined') {
+    if (session && session.token) {
+      window.__oaVideoSession = {
+        token: session.token,
+        playerName: session.name,
+        playerUuid: session.uuid,
+        publicServerKey: session.publicServerKey,
+        scope: session.scope,
+      };
+    } else {
+      delete window.__oaVideoSession;
+      if (window.__oaVideoAutoplayReady) {
+        window.__oaVideoAutoplayReady = false;
+        emitVideoAutoplayEvent('oa-video-autoplay-reset');
+        if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.resetAutoplayQueue === 'function') {
+          try { window.__oaVideoExtensionDebug.resetAutoplayQueue(); } catch (err) { /* ignore */ }
+        }
+      }
+    }
   }
 
-  if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.refreshIdentity === 'function') {
+  if (typeof window !== 'undefined'
+    && window.__oaVideoExtensionDebug
+    && typeof window.__oaVideoExtensionDebug.refreshIdentity === 'function') {
     try {
       window.__oaVideoExtensionDebug.refreshIdentity();
     } catch (err) {
@@ -327,6 +355,13 @@ class OpenAudioAppContainer extends React.Component {
     MediaManager.postBoot();
     SocketManager.connectToServer(getGlobalState().relay.endpoint);
     setGlobalState({ clickLock: false });
+    if (typeof window !== 'undefined') {
+      window.__oaVideoAutoplayReady = true;
+      emitVideoAutoplayEvent('oa-video-autoplay-ready');
+      if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.flushAutoplayQueue === 'function') {
+        try { window.__oaVideoExtensionDebug.flushAutoplayQueue(); } catch (err) { /* ignore */ }
+      }
+    }
     this.setState({ didUnlock: true });
 
     // store dev vars
