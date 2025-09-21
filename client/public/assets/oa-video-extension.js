@@ -140,12 +140,13 @@
   let preloadedSource = null;
   let activePlaylist = null;
   let pendingModalReveal = false;
+  let pendingPlayPayload = null;
 
   function schedulePendingInit() {
-    if (!pendingInitPayload || !autoplayReady) return;
+    if (!pendingInitPayload || !autoplayReady) return null;
     const { payload, options } = pendingInitPayload;
     pendingInitPayload = null;
-    Promise.resolve()
+    return Promise.resolve()
       .then(() => initVideo(payload, options))
       .then((result) => {
         if (options?.postPlay && result !== false) {
@@ -155,10 +156,21 @@
             try { onApplied(); } catch (err) { dbg('postPlay callback failed', err?.message || err); }
           }
         }
+        return result;
       })
       .catch((err) => {
         dbg('Failed to apply pending init payload', err?.message || err);
+        return false;
       });
+  }
+
+  function handleAutoplayQueue() {
+    const pendingInit = schedulePendingInit();
+    if (pendingInit && typeof pendingInit.then === 'function') {
+      pendingInit.finally(() => { flushQueuedPlay(); });
+    } else {
+      flushQueuedPlay();
+    }
   }
 
   function clearPlaylist(reason = 'clear') {
@@ -210,6 +222,12 @@
 
   function flushQueuedPlay() {
     if (!queuedPlayRequest || !autoplayReady) return queuedPlayRequest;
+    if (pendingPlayPayload) {
+      const { payload, options } = pendingPlayPayload;
+      pendingPlayPayload = null;
+      applyPlayPayload(payload, options || {});
+      return queuedPlayRequest;
+    }
     queuedPlayRequest = false;
     setStatus('Starting…');
     resyncToServerClock(true);
@@ -225,8 +243,7 @@
           pendingModalReveal = false;
           showModal();
         }
-        schedulePendingInit();
-        flushQueuedPlay();
+        handleAutoplayQueue();
       }
       return;
     }
@@ -236,8 +253,7 @@
         pendingModalReveal = false;
         showModal();
       }
-      schedulePendingInit();
-      flushQueuedPlay();
+      handleAutoplayQueue();
     } else {
       queuedPlayRequest = false;
     }
@@ -400,6 +416,7 @@
     preloadedSource = null;
     pendingInitPayload = null;
     pendingModalReveal = false;
+    pendingPlayPayload = null;
     dbg('Modal hidden');
   }
 
@@ -953,14 +970,34 @@
     serverPaused = false;
     resyncToServerClock(true);
 
-    if (autoplayReady) {
-      queuedPlayRequest = false;
-      setStatus('Starting…');
-      safePlay();
-    } else {
+    const clonedPayload = { ...msg };
+    const clonedOptions = options ? { ...options } : undefined;
+
+    if (!autoplayReady) {
       queuedPlayRequest = true;
       setStatus('Waiting for activation');
+      if (pendingInitPayload) {
+        const initOptions = pendingInitPayload.options || (pendingInitPayload.options = {});
+        if (!initOptions.postPlay) {
+          initOptions.postPlay = { payload: clonedPayload, options: clonedOptions };
+        } else {
+          pendingPlayPayload = { payload: clonedPayload, options: clonedOptions };
+        }
+      } else {
+        pendingPlayPayload = { payload: clonedPayload, options: clonedOptions };
+      }
+      return;
     }
+
+    const hasPendingOtherPlay = Boolean(pendingPlayPayload && pendingPlayPayload.payload !== msg);
+    if (pendingPlayPayload && pendingPlayPayload.payload === msg) {
+      pendingPlayPayload = null;
+    }
+    if (!hasPendingOtherPlay) {
+      queuedPlayRequest = false;
+    }
+    setStatus('Starting…');
+    safePlay();
   }
 
   function applyPausePayload(msg = {}) {
