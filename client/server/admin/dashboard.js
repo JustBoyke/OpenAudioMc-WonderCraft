@@ -305,8 +305,6 @@
       items.push(createSeekControl(token));
     }
 
-    items.push(createVolumeControl(token));
-
     return items;
   }
 
@@ -325,26 +323,6 @@
         return;
       }
       sendCommand('seek', token, { toMs: value });
-    });
-
-    container.appendChild(input);
-    container.appendChild(button);
-    return container;
-  }
-
-  function createVolumeControl(token) {
-    const container = document.createElement('div');
-
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = '0';
-    input.max = '100';
-    input.value = '100';
-    input.style.width = '100px';
-
-    const button = createActionButton('Set Volume', () => {
-      const vol = Number(input.value) / 100;
-      sendCommand('set-volume', token, { volume: vol });
     });
 
     container.appendChild(input);

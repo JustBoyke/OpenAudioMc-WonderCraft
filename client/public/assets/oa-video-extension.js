@@ -136,43 +136,36 @@
   let identityWatcher = null;
   let autoplayReady = window.__oaVideoAutoplayReady === true;
   let queuedPlayRequest = false;
-  const gestureRetryEvents = ['pointerdown', 'keydown', 'touchstart'];
-  let gestureRetryArmed = false;
+  let pendingInitPayload = null;
+  let preloadedSource = null;
+  let activePlaylist = null;
+  let pendingModalReveal = false;
 
-  function disarmGestureRetry() {
-    if (!gestureRetryArmed) return;
-    gestureRetryArmed = false;
-    if (typeof window === 'undefined') return;
-    gestureRetryEvents.forEach((type) => {
-      try {
-        window.removeEventListener(type, handleGestureRetry, true);
-      } catch (err) {
-        /* ignore */
-      }
-    });
+  function schedulePendingInit() {
+    if (!pendingInitPayload || !autoplayReady) return;
+    const { payload, options } = pendingInitPayload;
+    pendingInitPayload = null;
+    Promise.resolve()
+      .then(() => initVideo(payload, options))
+      .then((result) => {
+        if (options?.postPlay && result !== false) {
+          const { payload: playPayload, options: playOptions, onApplied } = options.postPlay;
+          applyPlayPayload(playPayload, playOptions);
+          if (typeof onApplied === 'function') {
+            try { onApplied(); } catch (err) { dbg('postPlay callback failed', err?.message || err); }
+          }
+        }
+      })
+      .catch((err) => {
+        dbg('Failed to apply pending init payload', err?.message || err);
+      });
   }
 
-  function armGestureRetry() {
-    if (gestureRetryArmed) return;
-    if (typeof window === 'undefined') return;
-    gestureRetryArmed = true;
-    gestureRetryEvents.forEach((type) => {
-      try {
-        window.addEventListener(type, handleGestureRetry, true);
-      } catch (err) {
-        /* ignore */
-      }
-    });
-  }
-
-  function handleGestureRetry() {
-    if (!queuedPlayRequest) {
-      disarmGestureRetry();
-      return;
+  function clearPlaylist(reason = 'clear') {
+    if (activePlaylist) {
+      dbg('Clearing playlist', reason);
     }
-    disarmGestureRetry();
-    setStatus('Starting…');
-    safePlay();
+    activePlaylist = null;
   }
 
   function buildIdentityKey(identity) {
@@ -218,7 +211,6 @@
   function flushQueuedPlay() {
     if (!queuedPlayRequest || !autoplayReady) return queuedPlayRequest;
     queuedPlayRequest = false;
-    disarmGestureRetry();
     setStatus('Starting…');
     resyncToServerClock(true);
     safePlay();
@@ -228,11 +220,23 @@
   function setAutoplayReady(value) {
     const ready = Boolean(value);
     if (autoplayReady === ready) {
-      if (ready) flushQueuedPlay();
+      if (ready) {
+        if (pendingModalReveal) {
+          pendingModalReveal = false;
+          showModal();
+        }
+        schedulePendingInit();
+        flushQueuedPlay();
+      }
       return;
     }
     autoplayReady = ready;
     if (ready) {
+      if (pendingModalReveal) {
+        pendingModalReveal = false;
+        showModal();
+      }
+      schedulePendingInit();
       flushQueuedPlay();
     } else {
       queuedPlayRequest = false;
@@ -392,7 +396,10 @@
     unbindFullscreenListeners();
     toggleModalChrome(false);
     setStatus('Idle');
-    disarmGestureRetry();
+    clearPlaylist('hide');
+    preloadedSource = null;
+    pendingInitPayload = null;
+    pendingModalReveal = false;
     dbg('Modal hidden');
   }
 
@@ -590,16 +597,12 @@
     if (!ui || !ui.video) return;
     suppressPlayEvent = true;
     queuedPlayRequest = false;
-    disarmGestureRetry();
     const playPromise = ui.video.play();
     if (playPromise && typeof playPromise.then === 'function') {
-      playPromise.then(() => {
-        disarmGestureRetry();
-      }).catch((err) => {
+      playPromise.catch((err) => {
         dbg('Autoplay prevented or failed', err?.name || err);
         queuedPlayRequest = true;
-        setStatus('Waiting for interaction');
-        armGestureRetry();
+        setStatus('Waiting for activation');
       }).finally(() => {
         suppressPlayEvent = false;
       });
@@ -743,36 +746,361 @@
     }
   }
 
-  async function initVideo({
-    url, startAtEpochMs, muted = false, volume = 1.0, autoclose = false,
-  }) {
-    dbg('Initializing video', { url, startAtEpochMs, muted, volume });
-    showModal();
+  function normalizeVideoUrl(url) {
+    try {
+      return new URL(url, window.location.href).href;
+    } catch (err) {
+      return url;
+    }
+  }
+
+  async function preloadVideo({ url }) {
+    if (!url) return false;
+    if (!ui) ui = createModal();
+    const { video, backdrop } = ui;
+    if (!video) return false;
+
+    if (backdrop && backdrop.style.display !== 'none') {
+      dbg('Skipping preload while modal visible');
+      return false;
+    }
+
+    const normalized = normalizeVideoUrl(url);
+    const alreadyLoaded = video.src === normalized && video.readyState >= 1;
+
+    if (video.src !== normalized) {
+      video.src = normalized;
+    }
+
+    if (!alreadyLoaded) {
+      await new Promise((resolve) => {
+        let settled = false;
+        const cleanup = () => {
+          if (settled) return;
+          settled = true;
+          video.removeEventListener('loadeddata', handleLoaded);
+          video.removeEventListener('canplay', handleLoaded);
+          video.removeEventListener('error', handleDone);
+          video.removeEventListener('abort', handleDone);
+          resolve();
+        };
+        const handleLoaded = () => cleanup();
+        const handleDone = () => cleanup();
+        video.addEventListener('loadeddata', handleLoaded, { once: true });
+        video.addEventListener('canplay', handleLoaded, { once: true });
+        video.addEventListener('error', handleDone, { once: true });
+        video.addEventListener('abort', handleDone, { once: true });
+        try {
+          video.load();
+        } catch (err) {
+          cleanup();
+        }
+      });
+    }
+
+    suppressPauseEvent = true;
+    try { video.pause(); } catch { /* ignore */ }
+    queueMicrotask(() => { suppressPauseEvent = false; });
+    try { video.currentTime = 0; } catch { /* ignore */ }
+
+    preloadedSource = {
+      normalized,
+      url,
+      timestamp: Date.now(),
+    };
+    dbg('Preloaded video source', normalized);
+    send({
+      type: 'VIDEO_STATE',
+      state: 'preloaded',
+      positionMs: 0,
+      bufferedMs: 0,
+    });
+    return true;
+  }
+
+  async function initVideo(payload = {}, options = {}) {
+    const opts = {
+      fromPlaylist: false,
+      allowBeforeAutoplay: false,
+      showModal: true,
+      forceAutoclose: null,
+      ...options,
+    };
+
+    const {
+      url,
+      startAtEpochMs,
+      muted = false,
+      volume = 1.0,
+    } = payload;
+
+    if (!url) {
+      dbg('Ignoring VIDEO_INIT without url');
+      return false;
+    }
+
+    if (!opts.fromPlaylist) {
+      clearPlaylist('external-init');
+    }
+
+    const normalizedUrl = normalizeVideoUrl(url);
+    const shouldDelay = !autoplayReady && !opts.allowBeforeAutoplay;
+    if (shouldDelay) {
+      pendingInitPayload = { payload, options: opts };
+      if (opts.showModal !== false) pendingModalReveal = true;
+      dbg('Deferring video init until OA client activated');
+      return false;
+    }
+
+    pendingInitPayload = null;
+
+    if (!ui) ui = createModal();
+    const { video } = ui;
+    if (!video) return false;
+
+    const shouldShowModal = opts.showModal !== false && autoplayReady;
+    if (shouldShowModal) {
+      showModal();
+    } else if (opts.showModal !== false) {
+      pendingModalReveal = true;
+    }
+
+    dbg('Initializing video', { url, startAtEpochMs, muted, volume, fromPlaylist: opts.fromPlaylist });
+
     sourceUrl = url;
     backendMuted = Boolean(muted);
     backendVolume = clamp01(typeof volume === 'number' ? volume : 1.0);
+    const forcedAutoclose = opts.forceAutoclose != null
+      ? Boolean(opts.forceAutoclose)
+      : Boolean(payload.autoclose);
+    playAutoclose = forcedAutoclose;
+
     serverPaused = true;
     lastAppliedVolume = null;
     lastAppliedMuted = null;
-    startedAtEpochMs = normalizeStartEpoch(startAtEpochMs); // server time reference
+    startedAtEpochMs = normalizeStartEpoch(startAtEpochMs);
     desiredPositionMs = 0;
-    playAutoclose = Boolean(autoclose);
 
-    ui.video.src = sourceUrl;
+    const canReusePreload = preloadedSource
+      && preloadedSource.normalized === normalizedUrl
+      && video.readyState >= 1;
 
-    // Autoplay policy: may require user gesture. We'll try play() later.
-    await ui.video.load?.();
+    if (!canReusePreload || video.src !== normalizedUrl) {
+      try {
+        video.src = normalizedUrl;
+        await video.load?.();
+      } catch (err) {
+        dbg('Video load error', err?.message || err);
+      }
+    } else {
+      dbg('Reusing preloaded video source', normalizedUrl);
+      suppressPauseEvent = true;
+      try { video.pause(); } catch { /* ignore */ }
+      queueMicrotask(() => { suppressPauseEvent = false; });
+      try { video.currentTime = 0; } catch { /* ignore */ }
+    }
+
+    if (!canReusePreload) {
+      preloadedSource = null;
+    }
 
     applyClientVolume();
     startVolumeSync();
 
     setStatus('Ready');
     send({
-      type: 'VIDEO_STATE', state: 'ready', positionMs: 0, bufferedMs: 0,
+      type: 'VIDEO_STATE',
+      state: 'ready',
+      positionMs: 0,
+      bufferedMs: 0,
     });
 
-    // Try to align position immediately even while paused
     resyncToServerClock(true);
+    return true;
+  }
+
+  function applyPlayPayload(msg = {}, options = {}) {
+    if (typeof msg.serverEpochMs === 'number') {
+      updateTimeOffsetFromPing(msg.serverEpochMs);
+    }
+
+    const forcedAutoclose = options?.forceAutoclose;
+    if (typeof msg.autoclose === 'boolean') {
+      playAutoclose = forcedAutoclose != null ? Boolean(forcedAutoclose) : msg.autoclose;
+    } else if (forcedAutoclose != null) {
+      playAutoclose = Boolean(forcedAutoclose);
+    }
+
+    if (typeof msg.volume === 'number') {
+      backendVolume = clamp01(msg.volume);
+      lastAppliedVolume = null;
+    }
+    if (typeof msg.muted === 'boolean') {
+      backendMuted = msg.muted;
+      lastAppliedMuted = null;
+    }
+    applyClientVolume();
+
+    if (typeof msg.atMs === 'number') {
+      updateStartEpochForPosition(msg.atMs);
+      jumpToPosition(msg.atMs);
+    }
+
+    serverPaused = false;
+    resyncToServerClock(true);
+
+    if (autoplayReady) {
+      queuedPlayRequest = false;
+      setStatus('Starting…');
+      safePlay();
+    } else {
+      queuedPlayRequest = true;
+      setStatus('Waiting for activation');
+    }
+  }
+
+  function applyPausePayload(msg = {}) {
+    serverPaused = true;
+    exitFullscreen();
+    if (typeof msg.autoclose === 'boolean') {
+      playAutoclose = msg.autoclose;
+    }
+    queuedPlayRequest = false;
+    if (typeof msg.volume === 'number') {
+      backendVolume = clamp01(msg.volume);
+      lastAppliedVolume = null;
+    }
+    if (typeof msg.muted === 'boolean') {
+      backendMuted = msg.muted;
+      lastAppliedMuted = null;
+    }
+    applyClientVolume();
+    if (typeof msg.atMs === 'number') {
+      updateStartEpochForPosition(msg.atMs);
+      jumpToPosition(msg.atMs);
+      resyncToServerClock(true);
+    }
+    safePause();
+    setStatus('Paused');
+  }
+
+  function applySeekPayload(msg = {}) {
+    if (typeof msg.toMs !== 'number') return;
+    const atMs = msg.toMs;
+    applyPlayPayload({
+      atMs,
+      volume: msg.volume,
+      muted: msg.muted,
+      autoclose: msg.autoclose,
+    }, { forceAutoclose: msg.autoclose });
+    if (autoplayReady) {
+      sendState('playing');
+    }
+  }
+
+  function normalizePlaylistItems(items) {
+    if (!Array.isArray(items)) return [];
+    return items.map((raw) => {
+      if (!raw || typeof raw !== 'object' || !raw.url) return null;
+      const entry = {
+        url: raw.url,
+        volume: typeof raw.volume === 'number' ? clamp01(raw.volume) : 1.0,
+        muted: typeof raw.muted === 'boolean' ? raw.muted : false,
+      };
+      if (typeof raw.autoclose === 'boolean') entry.autoclose = raw.autoclose;
+      if (Number.isFinite(raw.atMs)) entry.atMs = raw.atMs;
+      return entry;
+    }).filter(Boolean);
+  }
+
+  async function advancePlaylist() {
+    if (!activePlaylist || !Array.isArray(activePlaylist.items) || !activePlaylist.items.length) {
+      clearPlaylist('advance-empty');
+      return false;
+    }
+    if (activePlaylist.loading) {
+      dbg('Playlist advance skipped while loading');
+      return true;
+    }
+
+    const currentIndex = typeof activePlaylist.index === 'number' ? activePlaylist.index : -1;
+    const nextIndex = currentIndex + 1;
+    if (nextIndex >= activePlaylist.items.length) {
+      clearPlaylist('playlist-complete');
+      return false;
+    }
+
+    const item = activePlaylist.items[nextIndex];
+    const isLast = nextIndex === activePlaylist.items.length - 1;
+    const forcedAutoclose = item.autoclose != null ? Boolean(item.autoclose) : isLast;
+    const playPayload = {
+      type: 'VIDEO_PLAY',
+      serverEpochMs: Date.now(),
+      atMs: Number.isFinite(item.atMs) ? item.atMs : 0,
+      volume: item.volume,
+      muted: item.muted,
+      autoclose: forcedAutoclose,
+    };
+
+    const postPlay = {
+      payload: playPayload,
+      options: { forceAutoclose: forcedAutoclose },
+      onApplied: () => {
+        if (activePlaylist) {
+          activePlaylist.pendingPlay = null;
+        }
+      },
+    };
+
+    activePlaylist.loading = true;
+    try {
+      const initResult = await initVideo({
+        type: 'VIDEO_INIT',
+        url: item.url,
+        startAtEpochMs: Date.now(),
+        muted: item.muted,
+        volume: item.volume,
+        autoclose: forcedAutoclose,
+      }, { fromPlaylist: true, forceAutoclose: forcedAutoclose, postPlay });
+      activePlaylist.index = nextIndex;
+      if (initResult === false) {
+        activePlaylist.pendingPlay = playPayload;
+        dbg('Playlist item queued until activation', { index: nextIndex });
+        return true;
+      }
+      activePlaylist.pendingPlay = null;
+      applyPlayPayload(playPayload, { forceAutoclose: forcedAutoclose });
+      postPlay.onApplied();
+      return true;
+    } catch (err) {
+      dbg('Failed to start playlist item', err?.message || err);
+      clearPlaylist('failed');
+      return false;
+    } finally {
+      if (activePlaylist) activePlaylist.loading = false;
+    }
+  }
+
+  function startPlaylist(rawItems = []) {
+    const normalized = normalizePlaylistItems(rawItems);
+    if (!normalized.length) {
+      dbg('Ignoring empty playlist initialization');
+      return;
+    }
+    clearPlaylist('new-playlist');
+    activePlaylist = {
+      items: normalized,
+      index: -1,
+      loading: false,
+      pendingPlay: null,
+    };
+    setStatus('Preparing playlist…');
+    Promise.resolve()
+      .then(() => advancePlaylist())
+      .catch((err) => {
+        dbg('Playlist start failed', err?.message || err);
+        clearPlaylist('failed-start');
+      });
   }
 
   function resyncToServerClock(force = false) {
@@ -799,99 +1127,33 @@
         send({ type: 'PONG', tClient: Date.now(), tServer: msg.t });
         break;
 
+      case 'VIDEO_PRELOAD':
+        preloadVideo(msg);
+        break;
+
+      case 'VIDEO_PLAYLIST_INIT':
+        startPlaylist(msg.items || []);
+        break;
+
       case 'VIDEO_INIT':
         initVideo(msg);
         break;
 
       case 'VIDEO_PLAY':
-        // Ensure position matches server’s intended timeline
-        if (typeof msg.serverEpochMs === 'number') updateTimeOffsetFromPing(msg.serverEpochMs);
-        if (typeof msg.autoclose === 'boolean') {
-          playAutoclose = msg.autoclose;
-        }
-        if (typeof msg.volume === 'number') {
-          backendVolume = clamp01(msg.volume);
-          lastAppliedVolume = null;
-        }
-        if (typeof msg.muted === 'boolean') {
-          backendMuted = msg.muted;
-          lastAppliedMuted = null;
-        }
-        applyClientVolume();
-        if (typeof msg.atMs === 'number') {
-          updateStartEpochForPosition(msg.atMs);
-          jumpToPosition(msg.atMs);
-        }
-        serverPaused = false;
-        resyncToServerClock(true);
-        if (autoplayReady) {
-          queuedPlayRequest = false;
-          setStatus('Starting…');
-          safePlay();
-        } else {
-          queuedPlayRequest = true;
-          setStatus('Waiting for interaction');
-        }
+        clearPlaylist('server-play');
+        applyPlayPayload(msg);
         break;
 
       case 'VIDEO_PAUSE':
-        serverPaused = true;
-        exitFullscreen();
-        if (typeof msg.autoclose === 'boolean') {
-          playAutoclose = msg.autoclose;
-        }
-        queuedPlayRequest = false;
-        if (typeof msg.volume === 'number') {
-          backendVolume = clamp01(msg.volume);
-          lastAppliedVolume = null;
-        }
-        if (typeof msg.muted === 'boolean') {
-          backendMuted = msg.muted;
-          lastAppliedMuted = null;
-        }
-        applyClientVolume();
-        if (typeof msg.atMs === 'number') {
-          updateStartEpochForPosition(msg.atMs);
-          jumpToPosition(msg.atMs);
-        }
-        safePause();
-        if (typeof msg.atMs === 'number') {
-          resyncToServerClock(true);
-        }
-        setStatus('Paused');
+        applyPausePayload(msg);
         break;
 
       case 'VIDEO_SEEK':
-        if (typeof msg.toMs === 'number') {
-          if (typeof msg.autoclose === 'boolean') {
-            playAutoclose = msg.autoclose;
-          }
-          if (typeof msg.volume === 'number') {
-            backendVolume = clamp01(msg.volume);
-            lastAppliedVolume = null;
-          }
-          if (typeof msg.muted === 'boolean') {
-            backendMuted = msg.muted;
-            lastAppliedMuted = null;
-          }
-          applyClientVolume();
-          jumpToPosition(msg.toMs);
-          updateStartEpochForPosition(msg.toMs);
-          resyncToServerClock(true);
-          serverPaused = false;
-          if (autoplayReady) {
-            queuedPlayRequest = false;
-            setStatus('Starting…');
-            safePlay();
-            sendState('playing');
-          } else {
-            queuedPlayRequest = true;
-            setStatus('Waiting for interaction');
-          }
-        }
+        applySeekPayload(msg);
         break;
 
       case 'VIDEO_CLOSE':
+        clearPlaylist('server-close');
         exitFullscreen();
         queuedPlayRequest = false;
         hideModal();
@@ -917,7 +1179,6 @@
       if (suppressPlayEvent) suppressPlayEvent = false;
 
       queuedPlayRequest = false;
-      disarmGestureRetry();
 
       if (serverPaused) {
         dbg('Blocking local play while server paused');
@@ -958,7 +1219,17 @@
       exitFullscreen();
       setStatus('Ended');
       sendState('ended');
-      if (playAutoclose) {
+      if (activePlaylist) {
+        Promise.resolve()
+          .then(() => advancePlaylist())
+          .then((advanced) => {
+            if (!advanced && playAutoclose) hideModal();
+          })
+          .catch((err) => {
+            dbg('Failed to advance playlist', err?.message || err);
+            if (playAutoclose) hideModal();
+          });
+      } else if (playAutoclose) {
         hideModal();
       }
     });
