@@ -136,6 +136,44 @@
   let identityWatcher = null;
   let autoplayReady = window.__oaVideoAutoplayReady === true;
   let queuedPlayRequest = false;
+  const gestureRetryEvents = ['pointerdown', 'keydown', 'touchstart'];
+  let gestureRetryArmed = false;
+
+  function disarmGestureRetry() {
+    if (!gestureRetryArmed) return;
+    gestureRetryArmed = false;
+    if (typeof window === 'undefined') return;
+    gestureRetryEvents.forEach((type) => {
+      try {
+        window.removeEventListener(type, handleGestureRetry, true);
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+
+  function armGestureRetry() {
+    if (gestureRetryArmed) return;
+    if (typeof window === 'undefined') return;
+    gestureRetryArmed = true;
+    gestureRetryEvents.forEach((type) => {
+      try {
+        window.addEventListener(type, handleGestureRetry, true);
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+
+  function handleGestureRetry() {
+    if (!queuedPlayRequest) {
+      disarmGestureRetry();
+      return;
+    }
+    disarmGestureRetry();
+    setStatus('Starting…');
+    safePlay();
+  }
 
   function buildIdentityKey(identity) {
     if (!identity) return 'none';
@@ -180,6 +218,7 @@
   function flushQueuedPlay() {
     if (!queuedPlayRequest || !autoplayReady) return queuedPlayRequest;
     queuedPlayRequest = false;
+    disarmGestureRetry();
     setStatus('Starting…');
     resyncToServerClock(true);
     safePlay();
@@ -353,6 +392,7 @@
     unbindFullscreenListeners();
     toggleModalChrome(false);
     setStatus('Idle');
+    disarmGestureRetry();
     dbg('Modal hidden');
   }
 
@@ -550,12 +590,16 @@
     if (!ui || !ui.video) return;
     suppressPlayEvent = true;
     queuedPlayRequest = false;
+    disarmGestureRetry();
     const playPromise = ui.video.play();
     if (playPromise && typeof playPromise.then === 'function') {
-      playPromise.catch((err) => {
+      playPromise.then(() => {
+        disarmGestureRetry();
+      }).catch((err) => {
         dbg('Autoplay prevented or failed', err?.name || err);
         queuedPlayRequest = true;
         setStatus('Waiting for interaction');
+        armGestureRetry();
       }).finally(() => {
         suppressPlayEvent = false;
       });
@@ -873,6 +917,7 @@
       if (suppressPlayEvent) suppressPlayEvent = false;
 
       queuedPlayRequest = false;
+      disarmGestureRetry();
 
       if (serverPaused) {
         dbg('Blocking local play while server paused');
