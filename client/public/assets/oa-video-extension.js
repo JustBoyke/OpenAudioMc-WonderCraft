@@ -329,7 +329,7 @@
     backdrop.innerHTML = `
       <div class="oa-vid-modal">
         <div class="oa-vid-header">
-          <div class="oa-vid-title">Synced Video</div>
+          <div class="oa-vid-title">WonderCraft Video Player</div>
         </div>
         <div class="oa-vid-body">
           <video class="oa-vid-video" playsinline></video>
