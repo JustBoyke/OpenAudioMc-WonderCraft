@@ -20,6 +20,28 @@ import { VERSION } from '../build';
 import { isValidHttps } from './util/sslcheck';
 import { SeededTestData } from './config/TestData';
 
+function publishVideoSession(session) {
+  if (session && session.token) {
+    window.__oaVideoSession = {
+      token: session.token,
+      playerName: session.name,
+      playerUuid: session.uuid,
+      publicServerKey: session.publicServerKey,
+      scope: session.scope,
+    };
+  } else {
+    delete window.__oaVideoSession;
+  }
+
+  if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.refreshIdentity === 'function') {
+    try {
+      window.__oaVideoExtensionDebug.refreshIdentity();
+    } catch (err) {
+      // ignore refresh errors
+    }
+  }
+}
+
 class OpenAudioAppContainer extends React.Component {
   static contextType = FadeToCtx;
 
@@ -102,6 +124,7 @@ class OpenAudioAppContainer extends React.Component {
             isLoading: false,
             currentUser: null,
           });
+          publishVideoSession(null);
           return;
         }
         // eslint-disable-next-line consistent-return
@@ -112,6 +135,7 @@ class OpenAudioAppContainer extends React.Component {
       .then(this.attemptLoginWithTokenSet)
       .catch((e) => {
         setGlobalState({ isLoading: false });
+        publishVideoSession(null);
         fatalToast(`Your current link has expired. Please run /audio again to get a new link. Error: ${e.message}`);
         reportError(e);
         return null;
@@ -130,6 +154,8 @@ class OpenAudioAppContainer extends React.Component {
 
   async attemptLoginWithTokenSet(tokenSet) {
     if (tokenSet == null) return;
+    publishVideoSession(tokenSet);
+
     setGlobalState({
       currentUser: {
         userName: tokenSet.name,
@@ -154,6 +180,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to get server details from ${publicServerKey}`);
       throw new Error(`Failed to get server details from ${publicServerKey}`);
     }
@@ -165,6 +192,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to get server details from ${publicServerKey}! Please try again later or contact support.`);
       throw new Error(`Failed to get server details from ${publicServerKey}`);
     }
@@ -178,6 +206,7 @@ class OpenAudioAppContainer extends React.Component {
         isPersonalBlock: (serverData.isPersonalBlock != null && serverData.isPersonalBlock), // is it the account, or me?
         isLoading: false,
       });
+      publishVideoSession(null);
       // don't continue loading
       reportVital('metrics:accountlocked');
       return;
@@ -270,6 +299,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to connect with ${publicServerKey}! Please try a new link from /audio, or contact server staff if the issue persists.`);
       throw new Error(`Server ${publicServerKey} is offline`);
     } else {

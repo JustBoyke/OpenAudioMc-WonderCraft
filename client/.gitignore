@@ -24,3 +24,5 @@ yarn-error.log*
 
 # Million Lint
 .million
+
+/server/node_modules
