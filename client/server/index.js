@@ -1,9 +1,13 @@
+/* eslint-disable object-curly-newline */
+/* eslint-disable no-nested-ternary */
+/* eslint-disable no-restricted-syntax */
+/* eslint-disable quotes */
+const http = require("http");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
-const http = require("http");
-const path = require("path");
 const { WebSocketServer } = require("ws");
 
 // Load environment variables from .env file if present
