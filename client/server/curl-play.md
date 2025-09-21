@@ -47,3 +47,26 @@ curl -X POST http://localhost:8080/admin/video/pause \
   -d '{"token":"565", "atMs": 12000}'
 ```
 
+---
+
+## Minecraft Plugin WebSocket (Development)
+
+If you are working on the Minecraft plugin you can connect it directly to the backend without issuing cURL requests:
+
+* **Endpoint:** `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+* **Token:** supply the same value you configured for `PLUGIN_TOKEN` in `.env` (default `changeme`).
+
+Send JSON payloads with the same `type` names and fields as the HTTP helpers. Example:
+
+```json
+{
+  "id": "region-sync",
+  "type": "SET_REGION",
+  "playerUuid": "a7b49cc2-2bdb-4e4e-aa45-95daadcc2369",
+  "regionId": "spawn"
+}
+```
+
+The server answers each command with a `PLUGIN_RESPONSE` message that includes the HTTP status and body you would normally get
+back from the REST API.
+

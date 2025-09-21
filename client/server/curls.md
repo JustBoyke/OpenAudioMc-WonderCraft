@@ -84,3 +84,34 @@ curl -X POST http://localhost:8080/admin/video/play \
   -H "x-admin-key: changeme" \
   -d '{"playerId":"PLAYER_ID_HERE"}'
 ```
+
+---
+
+## Minecraft Plugin WebSocket
+
+The backend also exposes a WebSocket endpoint for the Minecraft plugin so it can push the same JSON payloads without going
+through the admin REST API.
+
+* **Endpoint:** `ws://localhost:8080/ws/plugin?token=YOUR_PLUGIN_TOKEN`
+* **Token:** matches the `PLUGIN_TOKEN` value in your `.env` (defaults to `changeme`). Connections without the correct token are
+  rejected.
+
+When the socket opens the server sends a `PLUGIN_HELLO` payload that lists currently connected browser clients. Afterwards the
+plugin can send the same `type` values that the HTTP routes accept (`SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`,
+`VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`). Include any targeting fields
+(`token`, `playerId`, `playerUuid`, `playerName`, or `regionId`) in the payload just like you would in the cURL requests.
+
+Example message:
+
+```json
+{
+  "id": "trigger-1",
+  "type": "VIDEO_PLAY_INSTANT",
+  "regionId": "spawn",
+  "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  "autoclose": true
+}
+```
+
+The server replies with `PLUGIN_RESPONSE` messages that echo the `id` (if provided) and include the HTTP status and body for
+the handled command.

@@ -625,11 +625,38 @@ function updateClientIdentity(token, patch = {}) {
   applyRegionForClient(token, info);
 }
 
-app.post("/set-region", (req, res) => {
-  const body = req.body || {};
+function buildError(status, message) {
+  return { status, body: { error: message } };
+}
+
+function deliverPayloadToTarget(target, payload, context = {}, options = {}) {
+  if (!target) {
+    return { delivered: false, response: { delivered: false, target: null } };
+  }
+
+  const { displayName = null, responseExtras = {} } = options;
+  let delivered = false;
+  if (target.kind === "token") {
+    delivered = sendToClientByToken(target.value, payload, context);
+  } else if (target.kind === "player") {
+    delivered = sendToClientByPlayer(target.value, payload, context);
+  } else if (target.kind === "region") {
+    delivered = sendToRegion(target.value, payload, context, { displayName });
+  }
+
+  const response = { delivered, target: target.kind, ...responseExtras };
+  if (target.kind === "region") {
+    response.regionId = target.value;
+    response.regionDisplayName = getRegionDisplayName(target.value);
+  }
+
+  return { delivered, response };
+}
+
+function handleSetRegionRequest(body = {}) {
   const target = resolvePlayerReference(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, or playerName required" });
+    return buildError(400, "token, playerId, playerUuid, or playerName required");
   }
 
   let regionSpecified = false;
@@ -645,7 +672,7 @@ app.post("/set-region", (req, res) => {
       displayName = displayName || value;
       desiredRegion = normalizeRegionId(value, { displayName });
     } else {
-      return res.status(400).json({ error: "region must be a string or null" });
+      return buildError(400, "region must be a string or null");
     }
   } else if (Object.prototype.hasOwnProperty.call(body, "regionId")) {
     regionSpecified = true;
@@ -656,12 +683,12 @@ app.post("/set-region", (req, res) => {
       displayName = displayName || value;
       desiredRegion = normalizeRegionId(value, { displayName });
     } else {
-      return res.status(400).json({ error: "regionId must be a string or null" });
+      return buildError(400, "regionId must be a string or null");
     }
   }
 
   if (!regionSpecified) {
-    return res.status(400).json({ error: "region or regionId required" });
+    return buildError(400, "region or regionId required");
   }
 
   const response = { ok: true, target: target.kind };
@@ -692,7 +719,7 @@ app.post("/set-region", (req, res) => {
       target.value,
     );
     if (!canonicalKey) {
-      return res.status(400).json({ error: `invalid ${target.source || "playerId"}` });
+      return buildError(400, `invalid ${target.source || "playerId"}`);
     }
 
     assignRegionForPlayerKey(canonicalKey, desiredRegion);
@@ -731,15 +758,13 @@ app.post("/set-region", (req, res) => {
     response.regionDisplayName = null;
   }
 
-  return res.json(response);
-});
+  return { status: 200, body: response };
+}
 
-// Example: init a video
-app.post("/admin/video/init", requireAdmin, (req, res) => {
-  const body = req.body || {};
+function handleVideoInitRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const {
@@ -760,31 +785,16 @@ app.post("/admin/video/init", requireAdmin, (req, res) => {
   };
   const context = {};
   if (sessionId != null) context.sessionId = sessionId;
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload, context);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload, context);
-  } else if (target.kind === "region") {
-    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
-    delivered = sendToRegion(target.value, payload, context, { displayName });
-  }
+  const { response } = deliverPayloadToTarget(target, payload, context, { displayName });
+  return { status: 200, body: response };
+}
 
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
-
-// Example: play/pause/seek/close
-app.post("/admin/video/play", requireAdmin, (req, res) => {
-  const body = req.body || {};
+function handleVideoPlayRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const payload = { type: "VIDEO_PLAY", serverEpochMs: Date.now() };
@@ -792,115 +802,76 @@ app.post("/admin/video/play", requireAdmin, (req, res) => {
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
   if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload);
-  } else if (target.kind === "region") {
-    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
-    delivered = sendToRegion(target.value, payload, {}, { displayName });
-  }
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
-app.post("/admin/video/pause", requireAdmin, (req, res) => {
-  const body = req.body || {};
+
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+  const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
+  return { status: 200, body: response };
+}
+
+function handleVideoPauseRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
-  const { atMs } = body;
-  const payload = { type: "VIDEO_PAUSE", atMs };
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload);
-  } else if (target.kind === "region") {
-    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
-    delivered = sendToRegion(target.value, payload, {}, { displayName });
-  }
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
-app.post("/admin/video/seek", requireAdmin, (req, res) => {
-  const body = req.body || {};
+  const payload = { type: "VIDEO_PAUSE" };
+  if (Number.isFinite(body.atMs)) payload.atMs = body.atMs;
+  if (typeof body.volume === "number") payload.volume = body.volume;
+  if (typeof body.muted === "boolean") payload.muted = body.muted;
+  if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
+
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+  const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
+  return { status: 200, body: response };
+}
+
+function handleVideoSeekRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
-  const { toMs } = body;
-  const payload = { type: "VIDEO_SEEK", toMs };
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload);
-  } else if (target.kind === "region") {
-    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
-    delivered = sendToRegion(target.value, payload, {}, { displayName });
-  }
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
-app.post("/admin/video/close", requireAdmin, (req, res) => {
-  const body = req.body || {};
+  const payload = { type: "VIDEO_SEEK" };
+  if (Number.isFinite(body.toMs)) payload.toMs = body.toMs;
+  if (Number.isFinite(body.startAtEpochMs)) payload.startAtEpochMs = body.startAtEpochMs;
+  if (typeof body.volume === "number") payload.volume = body.volume;
+  if (typeof body.muted === "boolean") payload.muted = body.muted;
+  if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
+
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+  const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
+  return { status: 200, body: response };
+}
+
+function handleVideoCloseRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const payload = { type: "VIDEO_CLOSE" };
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload);
-  } else if (target.kind === "region") {
-    const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
-    delivered = sendToRegion(target.value, payload, {}, { displayName });
-  }
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
+  const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
+  const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
+  return { status: 200, body: response };
+}
 
-app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
-  const body = req.body || {};
+function handleVideoPlayInstantRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const {
     url,
-    startAtEpochMs,
     muted = false,
     volume = 1.0,
+    startAtEpochMs,
     startOffsetMs = 0,
     sessionId = null,
   } = body;
 
   if (!url) {
-    return res.status(400).json({ error: "url required" });
+    return buildError(400, "url required");
   }
 
   const baseStart = typeof startAtEpochMs === "number" && Number.isFinite(startAtEpochMs)
@@ -921,14 +892,7 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
   if (sessionId != null) initContext.sessionId = sessionId;
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  let deliverInit = false;
-  if (target.kind === "token") {
-    deliverInit = sendToClientByToken(target.value, initPayload, initContext);
-  } else if (target.kind === "player") {
-    deliverInit = sendToClientByPlayer(target.value, initPayload, initContext);
-  } else if (target.kind === "region") {
-    deliverInit = sendToRegion(target.value, initPayload, initContext, { displayName });
-  }
+  const { delivered: deliverInit } = deliverPayloadToTarget(target, initPayload, initContext, { displayName });
 
   if (!deliverInit) {
     const response = { delivered: false, stage: "init", target: target.kind };
@@ -936,7 +900,7 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
       response.regionId = target.value;
       response.regionDisplayName = getRegionDisplayName(target.value);
     }
-    return res.json(response);
+    return { status: 200, body: response };
   }
 
   const playPayload = {
@@ -950,14 +914,7 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     playPayload.autoclose = body.autoclose;
   }
 
-  let deliverPlay = false;
-  if (target.kind === "token") {
-    deliverPlay = sendToClientByToken(target.value, playPayload);
-  } else if (target.kind === "player") {
-    deliverPlay = sendToClientByPlayer(target.value, playPayload);
-  } else if (target.kind === "region") {
-    deliverPlay = sendToRegion(target.value, playPayload, {}, { displayName });
-  }
+  const { delivered: deliverPlay } = deliverPayloadToTarget(target, playPayload, {}, { displayName });
 
   const response = {
     delivered: deliverInit && deliverPlay,
@@ -969,19 +926,18 @@ app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
     response.regionDisplayName = getRegionDisplayName(target.value);
   }
 
-  return res.json(response);
-});
+  return { status: 200, body: response };
+}
 
-app.post("/admin/video/preload", requireAdmin, (req, res) => {
-  const body = req.body || {};
+function handleVideoPreloadRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const { url } = body;
   if (!url) {
-    return res.status(400).json({ error: "url required" });
+    return buildError(400, "url required");
   }
 
   const payload = { type: "VIDEO_PRELOAD", url };
@@ -992,27 +948,14 @@ app.post("/admin/video/preload", requireAdmin, (req, res) => {
   if (body.sessionId != null) context.sessionId = body.sessionId;
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload, context);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload, context);
-  } else if (target.kind === "region") {
-    delivered = sendToRegion(target.value, payload, context, { displayName });
-  }
-  const response = { delivered, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
-  }
-  return res.json(response);
-});
+  const { response } = deliverPayloadToTarget(target, payload, context, { displayName });
+  return { status: 200, body: response };
+}
 
-app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
-  const body = req.body || {};
+function handleVideoInitializePlaylistRequest(body = {}) {
   const target = resolveTarget(body);
   if (!target) {
-    return res.status(400).json({ error: "token, playerId, playerUuid, playerName, or regionId required" });
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
 
   const rawItems = Array.isArray(body.items) ? body.items : [];
@@ -1029,7 +972,7 @@ app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
     .filter((entry) => entry != null);
 
   if (!items.length) {
-    return res.status(400).json({ error: "items array with at least one entry required" });
+    return buildError(400, "items array with at least one entry required");
   }
 
   const payload = {
@@ -1041,22 +984,94 @@ app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
   if (body.sessionId != null) context.sessionId = body.sessionId;
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
 
-  let delivered = false;
-  if (target.kind === "token") {
-    delivered = sendToClientByToken(target.value, payload, context);
-  } else if (target.kind === "player") {
-    delivered = sendToClientByPlayer(target.value, payload, context);
-  } else if (target.kind === "region") {
-    delivered = sendToRegion(target.value, payload, context, { displayName });
+  const { response } = deliverPayloadToTarget(target, payload, context, {
+    displayName,
+    responseExtras: { count: items.length },
+  });
+
+  return { status: 200, body: response };
+}
+
+function snapshotClientForPlugin(token) {
+  const info = clientsByToken.get(token);
+  if (!info) {
+    return { token };
   }
 
-  const response = { delivered, count: items.length, target: target.kind };
-  if (target.kind === "region") {
-    response.regionId = target.value;
-    response.regionDisplayName = getRegionDisplayName(target.value);
+  return {
+    token,
+    playerId: info.playerId || null,
+    playerUuid: info.playerUuid || null,
+    playerName: info.playerName || null,
+    regionId: info.region || null,
+    regionDisplayName: info.region ? getRegionDisplayName(info.region) : null,
+    connectedAt: info.connectedAt || null,
+    lastSeen: info.lastSeen || null,
+  };
+}
+
+function sendPluginResponse(ws, correlationId, status, body) {
+  const payload = {
+    type: "PLUGIN_RESPONSE",
+    status,
+    ok: status >= 200 && status < 300,
+  };
+  if (correlationId != null) {
+    payload.id = correlationId;
+  }
+  if (body !== undefined) {
+    payload.body = body;
   }
 
-  return res.json(response);
+  try {
+    ws.send(JSON.stringify(payload));
+  } catch {
+    // ignore send errors
+  }
+}
+
+app.post("/set-region", (req, res) => {
+  const { status, body } = handleSetRegionRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+// Example: init a video
+app.post("/admin/video/init", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoInitRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+// Example: play/pause/seek/close
+app.post("/admin/video/play", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoPlayRequest(req.body || {});
+  return res.status(status).json(body);
+});
+app.post("/admin/video/pause", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoPauseRequest(req.body || {});
+  return res.status(status).json(body);
+});
+app.post("/admin/video/seek", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoSeekRequest(req.body || {});
+  return res.status(status).json(body);
+});
+app.post("/admin/video/close", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoCloseRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+app.post("/admin/video/play-instant", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoPlayInstantRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+app.post("/admin/video/preload", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoPreloadRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
+  const { status, body } = handleVideoInitializePlaylistRequest(req.body || {});
+  return res.status(status).json(body);
 });
 
 app.get("/admin/video/connections", requireAdmin, (_req, res) => {
@@ -1140,7 +1155,10 @@ app.get("/healthz", (req, res) => res.json({ ok: true }));
 const server = http.createServer(app);
 
 // --- WebSocket server ---
+const pluginWss = new WebSocketServer({ noServer: true });
 const wss = new WebSocketServer({ noServer: true });
+
+const pluginClients = new Set();
 
 function resetInMemoryStores() {
   clientsByToken.clear();
@@ -1157,6 +1175,96 @@ function resetInMemoryStores() {
 function heartbeat(ws) {
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "PING", t: Date.now() }));
 }
+
+pluginWss.on("connection", (ws) => {
+  pluginClients.add(ws);
+
+  const hello = {
+    type: "PLUGIN_HELLO",
+    serverEpochMs: Date.now(),
+    connections: Array.from(clientsByToken.keys()).map((token) => snapshotClientForPlugin(token)),
+  };
+
+  try {
+    ws.send(JSON.stringify(hello));
+  } catch {
+    // ignore send failures
+  }
+
+  ws.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      sendPluginResponse(ws, null, 400, { error: "invalid_json" });
+      return;
+    }
+
+    if (!msg || typeof msg !== "object") {
+      sendPluginResponse(ws, null, 400, { error: "invalid_payload" });
+      return;
+    }
+
+    const correlationId = msg.id ?? msg.correlationId ?? null;
+    const type = typeof msg.type === "string" ? msg.type.toUpperCase() : null;
+    if (!type) {
+      sendPluginResponse(ws, correlationId, 400, { error: "type_required" });
+      return;
+    }
+
+    if (type === "PING") {
+      const payload = { type: "PONG", serverEpochMs: Date.now() };
+      if (correlationId != null) payload.id = correlationId;
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {
+        // ignore send errors
+      }
+      return;
+    }
+
+    let result;
+    switch (type) {
+      case "SET_REGION":
+        result = handleSetRegionRequest(msg);
+        break;
+      case "VIDEO_INIT":
+        result = handleVideoInitRequest(msg);
+        break;
+      case "VIDEO_PLAY":
+        result = handleVideoPlayRequest(msg);
+        break;
+      case "VIDEO_PAUSE":
+        result = handleVideoPauseRequest(msg);
+        break;
+      case "VIDEO_SEEK":
+        result = handleVideoSeekRequest(msg);
+        break;
+      case "VIDEO_CLOSE":
+        result = handleVideoCloseRequest(msg);
+        break;
+      case "VIDEO_PLAY_INSTANT":
+        result = handleVideoPlayInstantRequest(msg);
+        break;
+      case "VIDEO_PRELOAD":
+        result = handleVideoPreloadRequest(msg);
+        break;
+      case "VIDEO_PLAYLIST_INIT":
+      case "VIDEO_INITIALIZE_PLAYLIST":
+        result = handleVideoInitializePlaylistRequest(msg);
+        break;
+      default:
+        result = buildError(400, `unsupported type ${msg.type}`);
+        break;
+    }
+
+    sendPluginResponse(ws, correlationId, result.status, result.body);
+  });
+
+  ws.on("close", () => {
+    pluginClients.delete(ws);
+  });
+});
 
 wss.on("connection", async (ws, request) => {
   const params = new URLSearchParams(request.url.split("?")[1] || "");
@@ -1271,6 +1379,16 @@ wss.on("connection", async (ws, request) => {
 server.on("upgrade", (req, socket, head) => {
   if (req.url.startsWith("/ws/video")) {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  } else if (req.url.startsWith("/ws/plugin")) {
+    const params = new URLSearchParams(req.url.split("?")[1] || "");
+    const provided = params.get("token") || params.get("key") || params.get("auth");
+    const expected = process.env.PLUGIN_TOKEN;
+    if (expected && provided !== expected) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    pluginWss.handleUpgrade(req, socket, head, (ws) => pluginWss.emit("connection", ws, req));
   } else {
     socket.destroy();
   }
@@ -1285,6 +1403,7 @@ if (require.main === module) {
 module.exports = {
   app,
   server,
+  pluginWss,
   wss,
   applyRegionForClient,
   assignRegionForPlayerKey,
