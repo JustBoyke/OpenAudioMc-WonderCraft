@@ -182,6 +182,28 @@ function registerMediaCommand(token, payload, context = {}) {
   pruneStaleMedia();
 }
 
+function handleClientVideoState(token, message = {}) {
+  const record = activeMediaByToken.get(token);
+  if (!record) return;
+
+  record.lastUpdate = Date.now();
+  const state = record.state || {};
+
+  if (typeof message.state === "string") {
+    state.status = message.state;
+  }
+  if (Number.isFinite(message.positionMs)) {
+    state.reportedPositionMs = message.positionMs;
+  }
+
+  record.state = state;
+
+  const shouldAutoclose = Boolean(state.autoclose ?? record.init?.autoclose ?? false);
+  if (shouldAutoclose && (message.state === "ended" || message.state === "idle")) {
+    registerMediaCommand(token, { type: "VIDEO_CLOSE" });
+  }
+}
+
 function sendToClientByToken(token, payload, context) {
   if (payload && payload.type && payload.type.startsWith("VIDEO_")) {
     registerMediaCommand(token, payload, context);
@@ -545,8 +567,7 @@ wss.on("connection", async (ws, request) => {
           // optional: compute rtt/skew if you implement round-trip
           break;
         case "VIDEO_STATE":
-          // optional: log or store state
-          // console.log("STATE", playerId, msg);
+          handleClientVideoState(token, msg);
           break;
         case "HELLO":
           updateClientIdentity(token, msg);

@@ -28,6 +28,13 @@
   const modalApply = document.getElementById('modalApply');
   const modalCancel = document.getElementById('modalCancel');
   const logoutKeyBtn = document.getElementById('logoutKey');
+  const playModal = document.getElementById('playModal');
+  const playUrlInput = document.getElementById('playUrl');
+  const playAutocloseInput = document.getElementById('playAutoclose');
+  const playConfirmBtn = document.getElementById('playConfirm');
+  const playCancelBtn = document.getElementById('playCancel');
+
+  let pendingPlayTarget = null;
 
   adminKeyInput.value = state.adminKey;
 
@@ -104,6 +111,74 @@
 
   function closeAuthModal() {
     if (modal) modal.classList.remove('visible');
+  }
+
+  function closePlayModal() {
+    if (playModal) playModal.classList.remove('visible');
+    pendingPlayTarget = null;
+  }
+
+  function getConnectionDefaults(connection) {
+    const media = connection?.activeMedia || {};
+    const init = media.init || {};
+    const state = media.state || {};
+    const url = state.url || init.url || '';
+    const autoclose = state.autoclose ?? init.autoclose ?? false;
+    return { url, autoclose: Boolean(autoclose) };
+  }
+
+  function triggerPlay(connection, url, autoclose) {
+    if (!connection || !connection.token) return;
+    const trimmedUrl = (url || '').trim();
+    if (!trimmedUrl) {
+      alert('Please provide a video URL.');
+      if (playUrlInput) setTimeout(() => playUrlInput.focus(), 0);
+      return;
+    }
+
+    const payload = {
+      url: trimmedUrl,
+      autoclose: Boolean(autoclose),
+    };
+
+    if (connection.activeMedia?.sessionId) {
+      payload.sessionId = connection.activeMedia.sessionId;
+    }
+
+    closePlayModal();
+    sendCommand('play-instant', connection.token, payload);
+  }
+
+  function openPlayModal(connection) {
+    pendingPlayTarget = connection;
+
+    const defaults = getConnectionDefaults(connection);
+
+    if (!playModal || !playUrlInput || !playAutocloseInput) {
+      const fallbackUrl = window.prompt('Video URL to play', defaults.url || '');
+      if (fallbackUrl == null) {
+        pendingPlayTarget = null;
+        return;
+      }
+      const fallbackAutoclose = window.confirm('Enable autoclose when playback finishes?');
+      triggerPlay(connection, fallbackUrl, fallbackAutoclose);
+      return;
+    }
+
+    playUrlInput.value = defaults.url || '';
+    playAutocloseInput.checked = Boolean(defaults.autoclose);
+    playModal.classList.add('visible');
+    setTimeout(() => playUrlInput.focus(), 0);
+  }
+
+  function submitPlayModal() {
+    if (!pendingPlayTarget) {
+      closePlayModal();
+      return;
+    }
+    const url = playUrlInput ? playUrlInput.value : '';
+    const autoclose = playAutocloseInput ? playAutocloseInput.checked : false;
+    triggerPlay(pendingPlayTarget, url, autoclose);
   }
 
   async function fetchConnections(showErrors = true) {
@@ -217,7 +292,7 @@
     const seekable = ['playing', 'paused', 'ready'].includes(activeMedia?.state?.status);
 
     items.push(
-      createActionButton('Play', () => sendCommand('play', token), isPlaying, 'ghost')
+      createActionButton('Play', () => openPlayModal(connection), isPlaying, 'ghost')
     );
     items.push(
       createActionButton('Pause', () => sendCommand('pause', token), isPaused, 'ghost')
@@ -373,6 +448,42 @@
       closeAuthModal();
     });
   }
+
+  if (playCancelBtn) {
+    playCancelBtn.addEventListener('click', () => {
+      closePlayModal();
+    });
+  }
+
+  if (playConfirmBtn) {
+    playConfirmBtn.addEventListener('click', () => {
+      submitPlayModal();
+    });
+  }
+
+  if (playUrlInput) {
+    playUrlInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        submitPlayModal();
+      }
+    });
+  }
+
+  if (playModal) {
+    playModal.addEventListener('click', (event) => {
+      if (event.target === playModal) {
+        closePlayModal();
+      }
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (playModal && playModal.classList.contains('visible')) {
+        closePlayModal();
+      }
+    }
+  });
 
   if (logoutKeyBtn) {
     logoutKeyBtn.addEventListener('click', () => {

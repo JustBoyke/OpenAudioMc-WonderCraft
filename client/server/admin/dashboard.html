@@ -273,6 +273,32 @@
       font-weight: 600;
     }
 
+    .modal-card p {
+      margin: 0;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .modal-card .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
     .modal-actions {
       display: flex;
       gap: 12px;
@@ -290,6 +316,25 @@
       <div class="modal-actions">
         <button type="button" class="ghost" id="modalCancel">Cancel</button>
         <button type="button" class="primary" id="modalApply">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="playModal">
+    <div class="modal-card">
+      <h2>Play Video</h2>
+      <p>Provide the video URL and configure whether the session should close automatically when it ends.</p>
+      <div class="input-group">
+        <label for="playUrl">Video URL</label>
+        <input type="text" id="playUrl" placeholder="https://example.com/video.mp4" />
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="playAutoclose" />
+        <span>Autoclose when playback finishes</span>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="playCancel">Cancel</button>
+        <button type="button" class="primary" id="playConfirm">Play</button>
       </div>
     </div>
   </div>
