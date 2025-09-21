@@ -642,19 +642,23 @@
 
   function jumpToPosition(positionMs) {
     if (!ui || !ui.video) return;
-    const seconds = Math.max(Number(positionMs) / 1000, 0);
-    if (!Number.isFinite(seconds)) return;
+    const durationSeconds = Number.isFinite(ui.video.duration)
+      ? Math.max(0, ui.video.duration)
+      : Infinity;
+    const rawSeconds = Number(positionMs) / 1000;
+    if (!Number.isFinite(rawSeconds)) return;
 
-    desiredPositionMs = Math.max(Number(positionMs) || 0, 0);
+    const clampedSeconds = Math.min(Math.max(rawSeconds, 0), Math.max(0, durationSeconds - 0.25));
+    desiredPositionMs = Math.max(clampedSeconds * 1000, 0);
 
     const version = ++seekVersion;
     const apply = () => {
       if (!ui || !ui.video) return;
       if (seekVersion !== version) return;
-      const delta = Math.abs(ui.video.currentTime - seconds);
+      const delta = Math.abs(ui.video.currentTime - clampedSeconds);
       if (delta > 0.05) {
         suppressSeekGuard = true;
-        ui.video.currentTime = seconds;
+        ui.video.currentTime = clampedSeconds;
         queueMicrotask(() => { suppressSeekGuard = false; });
       }
     };
@@ -1110,12 +1114,17 @@
     const serverNow = nowServerMs();
     const targetMs = Math.max(0, serverNow - startedAtEpochMs);
     const curMs = (ui.video.currentTime || 0) * 1000;
-    const drift = targetMs - curMs;
-    desiredPositionMs = targetMs;
+
+    const durationMs = Number.isFinite(ui.video.duration)
+      ? Math.max(0, ui.video.duration * 1000)
+      : Infinity;
+    const clampedTargetMs = Math.min(targetMs, Math.max(0, durationMs - 250));
+    const drift = clampedTargetMs - curMs;
+    desiredPositionMs = clampedTargetMs;
 
     if (Math.abs(drift) > 250) { // allow small jitter
       suppressSeekGuard = true;
-      ui.video.currentTime = targetMs / 1000;
+      ui.video.currentTime = clampedTargetMs / 1000;
       queueMicrotask(() => { suppressSeekGuard = false; });
     }
   }
