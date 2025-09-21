@@ -941,8 +941,17 @@
   }
 
   function applyPlayPayload(msg = {}, options = {}) {
-    if (typeof msg.serverEpochMs === 'number') {
-      updateTimeOffsetFromPing(msg.serverEpochMs);
+    const receivedAtRaw = options && typeof options.receivedAtMs === 'number' ? options.receivedAtMs : NaN;
+    const receivedAtMs = Number.isFinite(receivedAtRaw) ? receivedAtRaw : Date.now();
+
+    const elapsedSinceReceipt = Math.max(0, Date.now() - receivedAtMs);
+    const hasServerEpoch = typeof msg.serverEpochMs === 'number' && Number.isFinite(msg.serverEpochMs);
+    const effectiveServerEpochMs = hasServerEpoch
+      ? msg.serverEpochMs + elapsedSinceReceipt
+      : null;
+
+    if (effectiveServerEpochMs != null) {
+      updateTimeOffsetFromPing(effectiveServerEpochMs);
     }
 
     const forcedAutoclose = options?.forceAutoclose;
@@ -962,16 +971,27 @@
     }
     applyClientVolume();
 
-    if (typeof msg.atMs === 'number') {
-      updateStartEpochForPosition(msg.atMs);
-      jumpToPosition(msg.atMs);
+    const hasAtPosition = typeof msg.atMs === 'number' && Number.isFinite(msg.atMs);
+    let effectiveAtMs = hasAtPosition ? msg.atMs : null;
+    if (effectiveAtMs != null) {
+      if (hasServerEpoch && effectiveServerEpochMs != null) {
+        const delta = effectiveServerEpochMs - msg.serverEpochMs;
+        if (Number.isFinite(delta) && delta > 0) {
+          effectiveAtMs += delta;
+        }
+      }
+      updateStartEpochForPosition(effectiveAtMs);
+      jumpToPosition(effectiveAtMs);
     }
 
     serverPaused = false;
     resyncToServerClock(true);
 
     const clonedPayload = { ...msg };
-    const clonedOptions = options ? { ...options } : undefined;
+    const clonedOptions = options ? { ...options } : {};
+    if (!Number.isFinite(clonedOptions.receivedAtMs)) {
+      clonedOptions.receivedAtMs = receivedAtMs;
+    }
 
     if (!autoplayReady) {
       queuedPlayRequest = true;
@@ -1033,7 +1053,7 @@
       volume: msg.volume,
       muted: msg.muted,
       autoclose: msg.autoclose,
-    }, { forceAutoclose: msg.autoclose });
+    }, { forceAutoclose: msg.autoclose, receivedAtMs: Date.now() });
     if (autoplayReady) {
       sendState('playing');
     }
@@ -1074,6 +1094,7 @@
     const item = activePlaylist.items[nextIndex];
     const isLast = nextIndex === activePlaylist.items.length - 1;
     const forcedAutoclose = item.autoclose != null ? Boolean(item.autoclose) : isLast;
+    const receivedAtMs = Date.now();
     const playPayload = {
       type: 'VIDEO_PLAY',
       serverEpochMs: Date.now(),
@@ -1085,7 +1106,7 @@
 
     const postPlay = {
       payload: playPayload,
-      options: { forceAutoclose: forcedAutoclose },
+      options: { forceAutoclose: forcedAutoclose, receivedAtMs },
       onApplied: () => {
         if (activePlaylist) {
           activePlaylist.pendingPlay = null;
@@ -1110,7 +1131,7 @@
         return true;
       }
       activePlaylist.pendingPlay = null;
-      applyPlayPayload(playPayload, { forceAutoclose: forcedAutoclose });
+      applyPlayPayload(playPayload, { forceAutoclose: forcedAutoclose, receivedAtMs });
       postPlay.onApplied();
       return true;
     } catch (err) {
@@ -1187,7 +1208,7 @@
 
       case 'VIDEO_PLAY':
         clearPlaylist('server-play');
-        applyPlayPayload(msg);
+        applyPlayPayload(msg, { receivedAtMs: Date.now() });
         break;
 
       case 'VIDEO_PAUSE':

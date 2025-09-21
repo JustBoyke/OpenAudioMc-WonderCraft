@@ -462,7 +462,22 @@ function handleClientVideoState(token, message = {}) {
       const regionRecord = activeMediaByRegion.get(regionId);
       const regionAutoclose = Boolean(regionRecord?.state?.autoclose ?? regionRecord?.init?.autoclose ?? false);
       if (regionAutoclose) {
-        sendToRegion(regionId, { type: "VIDEO_CLOSE" });
+        let otherActiveMembers = false;
+        const members = tokensByRegion.get(regionId);
+        if (members) {
+          for (const memberToken of members) {
+            if (memberToken === token) continue;
+            const memberRecord = activeMediaByToken.get(memberToken);
+            const memberStatus = memberRecord?.state?.status;
+            if (memberStatus && memberStatus !== "idle" && memberStatus !== "ended") {
+              otherActiveMembers = true;
+              break;
+            }
+          }
+        }
+        if (!otherActiveMembers) {
+          sendToRegion(regionId, { type: "VIDEO_CLOSE" });
+        }
       }
     }
   }
