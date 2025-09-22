@@ -251,12 +251,17 @@
   // ---------- Minimal modal UI ----------
   const styles = `
     .oa-vid-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 9999; }
-    .oa-vid-modal { background: #111; color: #fff; width: min(900px, 95vw); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); display:flex; flex-direction:column; }
+    .oa-vid-backdrop.is-mini { background: transparent; justify-content: flex-end; align-items: flex-end; pointer-events: none; padding: 0; }
+    .oa-vid-modal { background: #111; color: #fff; width: min(900px, 95vw); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); display:flex; flex-direction:column; pointer-events: auto; }
     .oa-vid-modal.is-fullscreen { width: 100vw; height: 100vh; border-radius: 0; box-shadow: none; }
+    .oa-vid-modal.is-mini { width: min(420px, 90vw); max-height: min(60vh, 320px); margin: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); flex: none; }
+    .oa-vid-modal.is-mini .oa-vid-footer { flex-wrap: wrap; }
+    .oa-vid-modal.is-mini .oa-vid-status { flex-basis: 100%; }
     .oa-vid-header { display:flex; align-items:center; justify-content: space-between; padding: 10px 14px; background: #1b1b1b; }
     .oa-vid-header.is-hidden, .oa-vid-footer.is-hidden { display: none !important; }
     .oa-vid-title { font-size: 14px; opacity: .85; }
     .oa-vid-body { background:#000; position:relative; flex:1; display:flex; min-height:60vh; }
+    .oa-vid-body.is-mini { min-height: 0; height: 200px; }
     .oa-vid-body.is-fullscreen { height: 100%; }
     .oa-vid-video { width: 100%; height: 100%; max-height: none; background:#000; object-fit: contain; }
     .oa-vid-footer { display:flex; align-items:center; justify-content: space-between; padding:8px 12px; background:#121212; min-height:36px; gap:8px; }
@@ -297,6 +302,7 @@
         <div class="oa-vid-footer">
           <div class="oa-vid-status">Idle</div>
           <div class="oa-vid-actions">
+            <button class="oa-vid-action" data-act="mini">Mini Player</button>
             <button class="oa-vid-action" data-act="fullscreen">Fullscreen</button>
           </div>
         </div>
@@ -310,6 +316,7 @@
     const video = backdrop.querySelector('.oa-vid-video');
     const status = backdrop.querySelector('.oa-vid-status');
     const fullscreenBtn = backdrop.querySelector('[data-act=fullscreen]');
+    const miniBtn = backdrop.querySelector('[data-act=mini]');
 
     video.setAttribute('controlsList', 'nodownload noplaybackrate nofullscreen');
     video.setAttribute('disablePictureInPicture', 'true');
@@ -328,6 +335,8 @@
     });
 
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+    if (miniBtn) miniBtn.addEventListener('click', toggleMiniPlayer);
+    if (miniBtn) miniBtn.textContent = miniActive ? 'Restore Size' : 'Mini Player';
 
     return {
       backdrop,
@@ -338,6 +347,7 @@
       video,
       status,
       fullscreenBtn,
+      miniBtn,
     };
   }
 
@@ -347,6 +357,7 @@
     if (!modal || !header || !body || !footer) return;
 
     if (active) {
+      if (miniActive) applyMiniState(false);
       modal.classList.add('is-fullscreen');
       body.classList.add('is-fullscreen');
       header.classList.add('is-hidden');
@@ -359,12 +370,56 @@
     }
   }
 
+  function updateMiniButton() {
+    if (!ui?.miniBtn) return;
+    ui.miniBtn.textContent = miniActive ? 'Restore Size' : 'Mini Player';
+    ui.miniBtn.setAttribute('aria-pressed', miniActive ? 'true' : 'false');
+  }
+
+  function applyMiniState(active) {
+    miniActive = Boolean(active);
+    if (!ui) return;
+    const { backdrop, modal, body, header, footer } = ui;
+    if (miniActive && fullscreenActive) {
+      exitFullscreen();
+    }
+    if (backdrop) {
+      backdrop.classList.toggle('is-mini', miniActive);
+      backdrop.style.pointerEvents = miniActive ? 'none' : '';
+    }
+    if (modal) {
+      modal.classList.toggle('is-mini', miniActive);
+      modal.style.pointerEvents = 'auto';
+      if (miniActive) {
+        modal.classList.remove('is-fullscreen');
+      }
+    }
+    if (body) {
+      body.classList.toggle('is-mini', miniActive);
+      if (miniActive) {
+        body.classList.remove('is-fullscreen');
+      }
+    }
+    if (header) {
+      header.classList.remove('is-hidden');
+    }
+    if (footer) {
+      footer.classList.remove('is-hidden');
+    }
+    updateMiniButton();
+  }
+
+  function toggleMiniPlayer() {
+    applyMiniState(!miniActive);
+  }
+
   let ui = null;
   function showModal() {
     if (!ui) ui = createModal();
     bindFullscreenListeners();
     syncFullscreenState();
     ui.backdrop.style.display = 'flex';
+    applyMiniState(miniActive);
     dbg('Modal shown');
   }
   function hideModal() {
@@ -394,6 +449,7 @@
     pendingInitPayload = null;
     pendingModalReveal = false;
     pendingPlayPayload = null;
+    applyMiniState(false);
     dbg('Modal hidden');
   }
 
@@ -518,6 +574,7 @@
   let lastAppliedMuted = null;
   let seekVersion = 0;
   let fullscreenActive = false;
+  let miniActive = false;
   let fullscreenListenersBound = false;
   let suppressSeekGuard = false;
   let desiredPositionMs = 0;
