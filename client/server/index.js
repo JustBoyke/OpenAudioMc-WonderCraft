@@ -901,7 +901,9 @@ function handleVideoPlayInstantRequest(body = {}) {
 
   const { delivered: deliverInit } = deliverPayloadToTarget(target, initPayload, initContext, { displayName });
 
-  if (!deliverInit) {
+  const shouldSendPlay = deliverInit || target.kind === "region";
+
+  if (!shouldSendPlay) {
     const response = { delivered: false, stage: "init", target: target.kind };
     if (target.kind === "region") {
       response.regionId = target.value;
@@ -925,12 +927,16 @@ function handleVideoPlayInstantRequest(body = {}) {
 
   const response = {
     delivered: deliverInit && deliverPlay,
-    stage: deliverPlay ? "play" : "init",
+    stage: deliverPlay
+      ? "play"
+      : (deliverInit ? "init" : (target.kind === "region" ? "play" : "init")),
     target: target.kind,
   };
   if (target.kind === "region") {
     response.regionId = target.value;
     response.regionDisplayName = getRegionDisplayName(target.value);
+    response.initDelivered = deliverInit;
+    response.playDelivered = deliverPlay;
   }
 
   return { status: 200, body: response };
