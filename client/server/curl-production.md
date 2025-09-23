@@ -33,9 +33,13 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/init \
   -d '{
         "regionId": "spawn",
         "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        "autoclose": true
+        "autoclose": true,
+        "backgroundImageUrl": "https://example.com/poster.jpg",
+        "backgroundImageTarget": "modal",
+        "backgroundImageSize": "cover"
       }'
 ```
+Optional extras: `backgroundImageTarget`, `backgroundImagePosition` (or `backgroundImagePositionX`/`backgroundImagePositionY`), `backgroundImageRepeat`, `backgroundImageAttachment`, `backgroundImageSize`, `backdropBackgroundColor`, `modalBackgroundColor`.
 
 ## POST /admin/video/play
 ```sh

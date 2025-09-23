@@ -250,9 +250,9 @@
 
   // ---------- Minimal modal UI ----------
   const styles = `
-    .oa-vid-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 9999; }
-    .oa-vid-backdrop.is-mini { background: transparent; justify-content: flex-end; align-items: flex-end; pointer-events: none; padding: 0; }
-    .oa-vid-modal { background: #111; color: #fff; width: min(900px, 95vw); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); display:flex; flex-direction:column; pointer-events: auto; }
+    .oa-vid-backdrop { position: fixed; inset: 0; background-color: var(--oa-video-backdrop-bg, rgba(0,0,0,.6)); display: none; align-items: center; justify-content: center; z-index: 9999; }
+    .oa-vid-backdrop.is-mini { background-color: transparent; justify-content: flex-end; align-items: flex-end; pointer-events: none; padding: 0; }
+    .oa-vid-modal { background-color: var(--oa-video-modal-bg, #111); color: #fff; width: min(900px, 95vw); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); display:flex; flex-direction:column; pointer-events: auto; }
     .oa-vid-modal.is-fullscreen { width: 100vw; height: 100vh; border-radius: 0; box-shadow: none; }
     .oa-vid-modal.is-mini { width: min(420px, 90vw); max-height: min(60vh, 320px); margin: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); flex: none; }
     .oa-vid-modal.is-mini .oa-vid-footer { flex-wrap: wrap; }
@@ -270,6 +270,22 @@
     .oa-vid-action { background:#1f1f1f; color:#fff; border:none; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }
     .oa-vid-action:hover { background:#353535; }
   `;
+
+  const BACKDROP_BG_CSS_VAR = '--oa-video-backdrop-bg';
+  const MODAL_BG_CSS_VAR = '--oa-video-modal-bg';
+  const BACKGROUND_STYLE_PROPERTIES = [
+    'background-image',
+    'background-size',
+    'background-position',
+    'background-repeat',
+    'background-attachment',
+  ];
+
+  function sanitizeNonEmptyString(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
 
   function ensureRoot() {
     let root = document.getElementById('oa-video-root');
@@ -351,6 +367,64 @@
     };
   }
 
+  function resetModalBackgroundConfig() {
+    if (!ui) return;
+    const elements = [ui.backdrop, ui.modal];
+    for (const el of elements) {
+      if (!el) continue;
+      for (const prop of BACKGROUND_STYLE_PROPERTIES) {
+        el.style.removeProperty(prop);
+      }
+    }
+    ui.backdrop?.style.removeProperty(BACKDROP_BG_CSS_VAR);
+    ui.modal?.style.removeProperty(MODAL_BG_CSS_VAR);
+  }
+
+  function applyModalBackgroundConfig(config = {}) {
+    if (!ui) return;
+    const cfg = config && typeof config === 'object' ? config : {};
+    resetModalBackgroundConfig();
+
+    const backdropColor = sanitizeNonEmptyString(cfg.backdropBackgroundColor || cfg.backdropColor);
+    const modalColor = sanitizeNonEmptyString(cfg.modalBackgroundColor || cfg.modalColor);
+
+    if (backdropColor) {
+      ui.backdrop?.style.setProperty(BACKDROP_BG_CSS_VAR, backdropColor);
+    }
+    if (modalColor) {
+      ui.modal?.style.setProperty(MODAL_BG_CSS_VAR, modalColor);
+    }
+
+    const imageUrl = sanitizeNonEmptyString(cfg.backgroundImageUrl);
+    if (!imageUrl) {
+      return;
+    }
+
+    const targetKey = cfg.backgroundImageTarget === 'modal' ? 'modal' : 'backdrop';
+    const targetEl = ui[targetKey];
+    if (!targetEl) {
+      return;
+    }
+
+    const position = sanitizeNonEmptyString(cfg.backgroundImagePosition);
+    const positionX = sanitizeNonEmptyString(cfg.backgroundImagePositionX);
+    const positionY = sanitizeNonEmptyString(cfg.backgroundImagePositionY);
+    const resolvedPosition = position
+      || ((positionX || positionY) ? `${positionX || 'center'} ${positionY || 'center'}`.trim() : null);
+
+    const repeat = sanitizeNonEmptyString(cfg.backgroundImageRepeat) || 'no-repeat';
+    const size = sanitizeNonEmptyString(cfg.backgroundImageSize) || 'cover';
+    const attachment = sanitizeNonEmptyString(cfg.backgroundImageAttachment);
+
+    targetEl.style.setProperty('background-image', `url("${imageUrl.replace(/"/g, '\"')}")`);
+    targetEl.style.setProperty('background-size', size);
+    targetEl.style.setProperty('background-repeat', repeat);
+    targetEl.style.setProperty('background-position', resolvedPosition || 'center center');
+    if (attachment) {
+      targetEl.style.setProperty('background-attachment', attachment);
+    }
+  }
+
   function toggleModalChrome(active) {
     if (!ui) return;
     const { modal, header, body, footer } = ui;
@@ -426,6 +500,7 @@
     if (!ui) return;
     clearPendingPlayRetry();
     exitFullscreen();
+    resetModalBackgroundConfig();
     ui.backdrop.style.display = 'none';
     suppressPauseEvent = true;
     ui.video.pause();
@@ -906,6 +981,8 @@
       clearPlaylist('external-init');
     }
 
+    if (!ui) ui = createModal();
+    applyModalBackgroundConfig(payload);
     const normalizedUrl = normalizeVideoUrl(url);
     const shouldDelay = !autoplayReady && !opts.allowBeforeAutoplay;
     if (shouldDelay) {
@@ -917,7 +994,6 @@
 
     pendingInitPayload = null;
 
-    if (!ui) ui = createModal();
     const { video } = ui;
     if (!video) return false;
 

@@ -65,6 +65,31 @@ function snapshotPayload(payload) {
   return payload ? JSON.parse(JSON.stringify(payload)) : payload;
 }
 
+function includeOptionalBackgroundFields(source, target) {
+  if (!source || typeof source !== "object" || !target || typeof target !== "object") return;
+  const optionalKeys = [
+    "backgroundImageUrl",
+    "backgroundImageTarget",
+    "backgroundImagePosition",
+    "backgroundImagePositionX",
+    "backgroundImagePositionY",
+    "backgroundImageRepeat",
+    "backgroundImageSize",
+    "backgroundImageAttachment",
+    "backdropBackgroundColor",
+    "modalBackgroundColor",
+    "backdropColor",
+    "modalColor",
+  ];
+
+  for (const key of optionalKeys) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) {
+      target[key] = value;
+    }
+  }
+}
+
 function ensureMediaRecord(store, key) {
   let record = store.get(key);
   if (!record) {
@@ -810,6 +835,7 @@ function handleVideoInitRequest(body = {}) {
     volume,
     autoclose: Boolean(body.autoclose),
   };
+  includeOptionalBackgroundFields(body, payload);
   const context = {};
   if (sessionId != null) context.sessionId = sessionId;
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
@@ -914,6 +940,7 @@ function handleVideoPlayInstantRequest(body = {}) {
     volume,
     autoclose: Boolean(body.autoclose),
   };
+  includeOptionalBackgroundFields(body, initPayload);
 
   const initContext = {};
   if (sessionId != null) initContext.sessionId = sessionId;
