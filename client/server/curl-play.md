@@ -17,7 +17,7 @@ curl -X POST http://localhost:8080/admin/video/init \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
 ```
-Add optional presentation keys like `backgroundImageUrl`, `backgroundImageTarget`, `backgroundImagePosition`, `backgroundImageRepeat`, `backgroundImageSize`, and `backdropBackgroundColor`/`modalBackgroundColor` to style the player shell.
+Add optional presentation keys like `backgroundImageUrl`, `backgroundImageTarget`, `backgroundImagePosition`, `backgroundImageRepeat`, `backgroundImageSize`, and `backdropBackgroundColor`/`modalBackgroundColor` to style the player shell. Supply `streamType` to force HLS/DASH/WebRTC handling (`"hls"`, `"dash"`, or `"webrtc"`). When omitted the client auto-detects `.m3u8` (HLS) and `.mpd` (DASH) URLs. Optional `streamConfig` objects are forwarded to the streaming library (for example `{ "hls": { "enableWorker": true } }` for hls.js or `{ "dash": { "streaming": { "lowLatencyEnabled": true } } }` for dash.js).
 
 ## Play
 ```sh
@@ -25,6 +25,7 @@ curl -X POST http://localhost:8080/admin/video/play \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"token":"565"}'
 ```
+Include `streamType`/`streamConfig` if you need to override the init payload (for example when switching from VOD to a live HLS feed without re-running `/init`).
 
 ## Pause
 ```sh
@@ -57,6 +58,8 @@ curl -X POST http://localhost:8080/admin/video/play-instant \
         "regionId": "spawn",
         "url": "https://example.com/video.mp4",
         "autoclose": true,
+        "streamType": "hls",
+        "streamConfig": { "hls": { "enableWorker": true } },
         "backgroundImageUrl": "https://example.com/poster.jpg",
         "backgroundImageTarget": "modal",
         "backgroundImageSize": "cover"
@@ -69,12 +72,13 @@ curl -X POST http://localhost:8080/admin/video/preload \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"token":"565","url":"https://example.com/video.mp4"}'
 ```
+Preload skips streaming URLs—HLS/DASH sources are attached at play time because they require the runtime player to stay active.
 
 ## Initialize Playlist
 ```sh
 curl -X POST http://localhost:8080/admin/video/initialize-playlist \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
-  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/loop.mp4","volume":0.8}]}'
+  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/live.m3u8","streamType":"hls"}]}'
 ```
 
 ## List Connections

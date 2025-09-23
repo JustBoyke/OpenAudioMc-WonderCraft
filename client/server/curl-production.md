@@ -40,6 +40,7 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/init \
       }'
 ```
 Optional extras: `backgroundImageTarget`, `backgroundImagePosition` (or `backgroundImagePositionX`/`backgroundImagePositionY`), `backgroundImageRepeat`, `backgroundImageAttachment`, `backgroundImageSize`, `backdropBackgroundColor`, `modalBackgroundColor`.
+Use `streamType` to force the streaming backend (`"hls"`, `"dash"`, `"webrtc"`) and `streamConfig` to forward library options (for example `{ "hls": { "enableWorker": true } }`). When omitted, `.m3u8` and `.mpd` URLs are detected automatically.
 
 ## POST /admin/video/play
 ```sh
@@ -47,6 +48,7 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/play \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE"}'
 ```
+Add `streamType`/`streamConfig` if you need to override the active stream without re-running `/init`.
 
 ## POST /admin/video/pause
 ```sh
@@ -79,6 +81,8 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/play-instant \
         "regionId": "spawn",
         "url": "https://example.com/video.mp4",
         "autoclose": true,
+        "streamType": "dash",
+        "streamConfig": { "dash": { "streaming": { "lowLatencyEnabled": true } } },
         "backgroundImageUrl": "https://example.com/poster.jpg",
         "backgroundImageTarget": "modal",
         "backgroundImageSize": "cover"
@@ -91,12 +95,13 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/preload \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"token":"TOKEN_HERE","url":"https://example.com/video.mp4"}'
 ```
+Streaming URLs (HLS/DASH) are not preloaded—the client binds them when playback starts so the player instance can manage the media source.
 
 ## POST /admin/video/initialize-playlist
 ```sh
 curl -X POST https://audio.wondercraftmc.nl/api/admin/video/initialize-playlist \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
-  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/loop.mp4","volume":0.8}]}'
+  -d '{"regionId":"spawn","items":[{"url":"https://example.com/intro.mp4"},{"url":"https://example.com/live/playlist.m3u8","streamType":"hls"}]}'
 ```
 
 ## GET /admin/video/connections
