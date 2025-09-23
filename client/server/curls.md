@@ -64,6 +64,7 @@ Prepare a video for a target or region.
 Body fields:
 - Required: `url`
 - Optional playback: `startAtEpochMs`, `muted` (bool), `volume` (0.0–1.0), `sessionId`, `autoclose` (bool)
+- Streaming: `streamType` (`"hls"`, `"dash"`, `"webrtc"`) to force a backend, and `streamConfig` to forward player options (e.g. `{ "hls": { "enableWorker": true } }`). When omitted the client auto-detects `.m3u8`/`.mpd` URLs and prefers native playback when available.
 - Optional visuals: `backgroundImageUrl`, `backgroundImageTarget` (`"backdrop"` or `"modal"`), `backgroundImagePosition` (or `backgroundImagePositionX`/`backgroundImagePositionY`), `backgroundImageRepeat`, `backgroundImageSize`, `backgroundImageAttachment`, `backdropBackgroundColor`, `modalBackgroundColor`
 - Target: one of the targeting fields above
 
@@ -101,7 +102,7 @@ curl -X POST http://localhost:8080/admin/video/init \
 ---
 
 ## POST /admin/video/play
-Start or resume playback. Optional overrides: `atMs`, `volume`, `muted`, `autoclose`.
+Start or resume playback. Optional overrides: `atMs`, `volume`, `muted`, `autoclose`, plus `streamType`/`streamConfig` if you need to swap streaming modes without running `/init` again.
 
 ```sh
 curl -X POST http://localhost:8080/admin/video/play \
@@ -144,6 +145,7 @@ curl -X POST http://localhost:8080/admin/video/close \
 Convenience: init and immediately play.
 
 Optional playback: `startAtEpochMs`, `startOffsetMs`, `muted`, `volume`, `sessionId`, `autoclose`.
+Streaming fields `streamType`/`streamConfig` work here as well.
 
 Optional visuals (same as `/admin/video/init`):
 `backgroundImageUrl`, `backgroundImageTarget` (`"backdrop"` or `"modal"`),
@@ -169,7 +171,7 @@ curl -X POST http://localhost:8080/admin/video/play-instant \
 ```
 
 ## POST /admin/video/preload
-Ask clients to preload a `url` (optionally with `volume`, `muted`, `sessionId`).
+Ask clients to preload a `url` (optionally with `volume`, `muted`, `sessionId`). Streaming URLs are skipped because HLS/DASH sources stay attached to the player instance instead of being cached up front.
 
 ```sh
 curl -X POST http://localhost:8080/admin/video/preload \
@@ -179,7 +181,7 @@ curl -X POST http://localhost:8080/admin/video/preload \
 ```
 
 ## POST /admin/video/initialize-playlist
-Initialize a playlist. Body: `items` array with `{ url, volume?, muted?, autoclose?, atMs? }`.
+Initialize a playlist. Body: `items` array with `{ url, volume?, muted?, autoclose?, atMs?, streamType?, streamConfig? }`.
 
 ```sh
 curl -X POST http://localhost:8080/admin/video/initialize-playlist \

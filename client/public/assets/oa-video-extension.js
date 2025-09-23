@@ -506,6 +506,7 @@
     suppressPauseEvent = true;
     ui.video.pause();
     queueMicrotask(() => { suppressPauseEvent = false; });
+    destroyStreamingController({ keepConfig: false });
     seekVersion += 1;
     ui.video.src = '';
     serverPaused = false;
@@ -655,10 +656,193 @@
   let suppressSeekGuard = false;
   let desiredPositionMs = 0;
   let playAutoclose = false;
+  let activeStreamController = null;
+  let lastStreamSpec = null;
 
   const DEFAULT_CLIENT_VOLUME = 0.35;
+  const STREAM_TYPES = { HLS: 'hls', DASH: 'dash', WEBRTC: 'webrtc' };
 
   function setStatus(text) { if (ui) ui.status.textContent = text; }
+
+  function getStreamingLoader() { return window.__oaVideoLoadStreamingLib; }
+
+  function supportsNativeHls(video) {
+    if (!video || typeof video.canPlayType !== 'function') return false;
+    const support = video.canPlayType('application/vnd.apple.mpegurl');
+    return support === 'probably' || support === 'maybe';
+  }
+
+  function detectStreamType(payload = {}, normalizedUrl = '') {
+    const explicitRaw = typeof payload.streamType === 'string' ? payload.streamType.trim().toLowerCase() : null;
+    if (explicitRaw === STREAM_TYPES.HLS || explicitRaw === 'hls.js') return STREAM_TYPES.HLS;
+    if (explicitRaw === STREAM_TYPES.DASH || explicitRaw === 'dash.js' || explicitRaw === 'dashjs') return STREAM_TYPES.DASH;
+    if (explicitRaw === STREAM_TYPES.WEBRTC || explicitRaw === 'rtc') return STREAM_TYPES.WEBRTC;
+
+    const cleanUrl = (normalizedUrl || '').split('#')[0].split('?')[0].toLowerCase();
+    if (cleanUrl.endsWith('.m3u8')) return STREAM_TYPES.HLS;
+    if (cleanUrl.endsWith('.mpd')) return STREAM_TYPES.DASH;
+    if (cleanUrl.startsWith('webrtc:') || cleanUrl.startsWith('rtmp:')) return STREAM_TYPES.WEBRTC;
+    return null;
+  }
+
+  function buildStreamSpec(payload = {}, normalizedUrl = '') {
+    const type = detectStreamType(payload, normalizedUrl);
+    if (!type) return null;
+    const config = (payload.streamConfig && typeof payload.streamConfig === 'object')
+      ? payload.streamConfig
+      : null;
+    return {
+      type,
+      url: payload.url || normalizedUrl,
+      normalizedUrl,
+      config: config || {},
+    };
+  }
+
+  function detachVideoSource(video) {
+    if (!video) return;
+    try { video.pause(); } catch { /* ignore */ }
+    try { video.removeAttribute('src'); } catch { /* ignore */ }
+    try { video.load?.(); } catch { /* ignore */ }
+    video.srcObject = null;
+  }
+
+  async function loadStreamingLibrary(kind) {
+    const loader = getStreamingLoader();
+    if (!loader) throw new Error('Streaming loader unavailable');
+    return loader(kind);
+  }
+
+  function destroyStreamingController({ keepConfig = false } = {}) {
+    const controller = activeStreamController;
+    if (!controller) {
+      if (!keepConfig) lastStreamSpec = null;
+      return false;
+    }
+
+    try { controller.cleanup?.(); } catch { /* ignore */ }
+
+    try {
+      if (controller.type === STREAM_TYPES.HLS) {
+        controller.instance?.detachMedia?.();
+        controller.instance?.destroy?.();
+      } else if (controller.type === STREAM_TYPES.DASH) {
+        controller.instance?.reset?.();
+      } else if (controller.type === STREAM_TYPES.WEBRTC) {
+        if (controller.instance?.close) {
+          try { controller.instance.close(); } catch { /* ignore */ }
+        }
+      }
+    } catch (err) {
+      dbg('Failed to destroy streaming controller', err?.message || err);
+    }
+
+    activeStreamController = null;
+    if (ui?.video) detachVideoSource(ui.video);
+    if (!keepConfig) lastStreamSpec = null;
+    return true;
+  }
+
+  async function attachStreamingSource(spec, { allowNativeFallback = true } = {}) {
+    if (!ui || !ui.video || !spec) return false;
+    const { video } = ui;
+
+    destroyStreamingController({ keepConfig: true });
+    detachVideoSource(video);
+
+    const type = spec.type;
+
+    if (type === STREAM_TYPES.WEBRTC) {
+      setStatus('WebRTC streams require a custom integration');
+      dbg('WebRTC stream requested but not implemented', spec.url);
+      throw new Error('webrtc_not_supported');
+    }
+
+    if (type === STREAM_TYPES.HLS) {
+      if (allowNativeFallback && supportsNativeHls(video)) {
+        video.src = spec.normalizedUrl;
+        lastStreamSpec = { ...spec, usingNative: true };
+        activeStreamController = null;
+        return true;
+      }
+
+      const HlsCtor = await loadStreamingLibrary(STREAM_TYPES.HLS);
+      if (HlsCtor?.isSupported && !HlsCtor.isSupported()) {
+        if (supportsNativeHls(video)) {
+          video.src = spec.normalizedUrl;
+          lastStreamSpec = { ...spec, usingNative: true };
+          activeStreamController = null;
+          return true;
+        }
+        throw new Error('hls_not_supported');
+      }
+
+      const options = spec.config?.hls || spec.config || {};
+      const instance = new HlsCtor(options);
+      const handleError = (event, data) => {
+        const details = data?.details || data?.type || 'unknown';
+        const fatal = data?.fatal === true;
+        const message = fatal ? `Stream error (${details})` : `Stream warning (${details})`;
+        setStatus(message);
+        dbg('HLS error', data);
+        if (fatal) {
+          destroyStreamingController({ keepConfig: true });
+        }
+      };
+      instance.on?.(HlsCtor.Events.ERROR, handleError);
+      instance.attachMedia(video);
+      instance.loadSource(spec.normalizedUrl);
+      activeStreamController = {
+        type: STREAM_TYPES.HLS,
+        instance,
+        cleanup: () => {
+          instance.off?.(HlsCtor.Events.ERROR, handleError);
+        },
+      };
+      lastStreamSpec = { ...spec, usingNative: false };
+      return true;
+    }
+
+    if (type === STREAM_TYPES.DASH) {
+      const dashjs = await loadStreamingLibrary(STREAM_TYPES.DASH);
+      const player = dashjs.MediaPlayer().create();
+      const settings = spec.config?.dash || spec.config || {};
+      if (settings && typeof player.updateSettings === 'function') {
+        player.updateSettings(settings);
+      }
+      const handleError = (event) => {
+        const msg = event?.event?.message || event?.error?.message || event?.message || 'unknown';
+        setStatus(`Stream error (${msg})`);
+        dbg('DASH error', event);
+      };
+      player.on?.(dashjs.MediaPlayer.events.ERROR, handleError);
+      player.initialize(video, spec.normalizedUrl, false);
+      activeStreamController = {
+        type: STREAM_TYPES.DASH,
+        instance: player,
+        cleanup: () => {
+          player.off?.(dashjs.MediaPlayer.events.ERROR, handleError);
+        },
+      };
+      lastStreamSpec = { ...spec, usingNative: false };
+      return true;
+    }
+
+    return false;
+  }
+
+  async function ensureStreamAttachment() {
+    if (!lastStreamSpec || lastStreamSpec.usingNative) return false;
+    if (activeStreamController) return true;
+    try {
+      await attachStreamingSource(lastStreamSpec, { allowNativeFallback: false });
+      return true;
+    } catch (err) {
+      dbg('Failed to reattach stream', err?.message || err);
+      setStatus('Stream failed to resume');
+      return false;
+    }
+  }
 
   function clamp01(value) {
     if (!Number.isFinite(value)) return 0;
@@ -749,7 +933,10 @@
     if (!ui || !ui.video) return;
     clearPendingPlayRetry();
     suppressPauseEvent = true;
-    ui.video.pause();
+    try { ui.video.pause(); } catch { /* ignore */ }
+    if (lastStreamSpec && !lastStreamSpec.usingNative) {
+      destroyStreamingController({ keepConfig: true });
+    }
     queueMicrotask(() => { suppressPauseEvent = false; });
   }
 
@@ -893,7 +1080,8 @@
     }
   }
 
-  async function preloadVideo({ url }) {
+  async function preloadVideo(payload = {}) {
+    const { url } = payload;
     if (!url) return false;
     if (!ui) ui = createModal();
     const { video, backdrop } = ui;
@@ -905,6 +1093,12 @@
     }
 
     const normalized = normalizeVideoUrl(url);
+    const streamSpec = buildStreamSpec(payload, normalized);
+    if (streamSpec) {
+      dbg('Skipping preload for streaming source', streamSpec.type);
+      return false;
+    }
+
     const alreadyLoaded = video.src === normalized && video.readyState >= 1;
 
     if (video.src !== normalized) {
@@ -1021,11 +1215,33 @@
     startedAtEpochMs = normalizeStartEpoch(startAtEpochMs);
     desiredPositionMs = 0;
 
-    const canReusePreload = preloadedSource
+    const streamSpec = buildStreamSpec(payload, normalizedUrl);
+    const usingStream = Boolean(streamSpec);
+
+    if (!usingStream) {
+      destroyStreamingController({ keepConfig: false });
+      lastStreamSpec = null;
+    }
+
+    const canReusePreload = !usingStream
+      && preloadedSource
       && preloadedSource.normalized === normalizedUrl
       && video.readyState >= 1;
 
-    if (!canReusePreload || video.src !== normalizedUrl) {
+    if (usingStream) {
+      lastStreamSpec = streamSpec;
+      preloadedSource = null;
+      setStatus('Loading stream…');
+      try {
+        await attachStreamingSource(streamSpec);
+      } catch (err) {
+        const message = err?.message || err;
+        setStatus('Stream failed to load');
+        dbg('Streaming attach error', message);
+        lastStreamSpec = null;
+        return false;
+      }
+    } else if (!canReusePreload || video.src !== normalizedUrl) {
       try {
         video.src = normalizedUrl;
         await video.load?.();
@@ -1040,7 +1256,7 @@
       try { video.currentTime = 0; } catch { /* ignore */ }
     }
 
-    if (!canReusePreload) {
+    if (!usingStream && !canReusePreload) {
       preloadedSource = null;
     }
 
@@ -1059,7 +1275,13 @@
     return true;
   }
 
-  function applyPlayPayload(msg = {}, options = {}) {
+  async function applyPlayPayload(msg = {}, options = {}) {
+    const streamReady = await ensureStreamAttachment();
+    if (lastStreamSpec && !lastStreamSpec.usingNative && !streamReady) {
+      dbg('Stream not ready; aborting play request');
+      return;
+    }
+
     const receivedAtRaw = options && typeof options.receivedAtMs === 'number' ? options.receivedAtMs : NaN;
     const receivedAtMs = Number.isFinite(receivedAtRaw) ? receivedAtRaw : Date.now();
 

@@ -156,6 +156,8 @@ function registerMediaCommand(store, key, payload, context = {}) {
         volume: cloned.volume ?? 1.0,
         url: cloned.url,
         autoclose: Boolean(cloned.autoclose),
+        streamType: cloned.streamType || null,
+        streamConfig: cloned.streamConfig || null,
       };
       record.lastCommand = cloned;
       break;
@@ -199,6 +201,8 @@ function registerMediaCommand(store, key, payload, context = {}) {
         url: state.url ?? record.init?.url ?? null,
         autoclose,
       };
+      if (cloned.streamType != null) record.state.streamType = cloned.streamType;
+      if (cloned.streamConfig != null) record.state.streamConfig = cloned.streamConfig;
       record.lastCommand = { ...cloned, atMs, startAtEpochMs: startedAtEpochMs, autoclose };
       break;
     }
@@ -217,6 +221,8 @@ function registerMediaCommand(store, key, payload, context = {}) {
         volume: cloned.volume ?? state.volume ?? 1.0,
         autoclose,
       };
+      if (cloned.streamType != null) record.state.streamType = cloned.streamType;
+      if (cloned.streamConfig != null) record.state.streamConfig = cloned.streamConfig;
       record.lastCommand = { ...cloned, atMs: pausedAtMs, autoclose };
       break;
     }
@@ -237,6 +243,8 @@ function registerMediaCommand(store, key, payload, context = {}) {
         volume: cloned.volume ?? state.volume ?? 1.0,
         autoclose,
       };
+      if (cloned.streamType != null) record.state.streamType = cloned.streamType;
+      if (cloned.streamConfig != null) record.state.streamConfig = cloned.streamConfig;
       record.lastCommand = { ...cloned, toMs, autoclose };
       break;
     }
@@ -835,6 +843,8 @@ function handleVideoInitRequest(body = {}) {
     volume,
     autoclose: Boolean(body.autoclose),
   };
+  if (typeof body.streamType === "string") payload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") payload.streamConfig = body.streamConfig;
   includeOptionalBackgroundFields(body, payload);
   const context = {};
   if (sessionId != null) context.sessionId = sessionId;
@@ -855,6 +865,8 @@ function handleVideoPlayRequest(body = {}) {
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
   if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
+  if (typeof body.streamType === "string") payload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") payload.streamConfig = body.streamConfig;
 
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
   const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
@@ -872,6 +884,8 @@ function handleVideoPauseRequest(body = {}) {
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
   if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
+  if (typeof body.streamType === "string") payload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") payload.streamConfig = body.streamConfig;
 
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
   const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
@@ -890,6 +904,8 @@ function handleVideoSeekRequest(body = {}) {
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
   if (typeof body.autoclose === "boolean") payload.autoclose = body.autoclose;
+  if (typeof body.streamType === "string") payload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") payload.streamConfig = body.streamConfig;
 
   const displayName = body.regionDisplayName || body.regionName || body.regionLabel || body.regionId;
   const { response } = deliverPayloadToTarget(target, payload, {}, { displayName });
@@ -940,6 +956,8 @@ function handleVideoPlayInstantRequest(body = {}) {
     volume,
     autoclose: Boolean(body.autoclose),
   };
+  if (typeof body.streamType === "string") initPayload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") initPayload.streamConfig = body.streamConfig;
   includeOptionalBackgroundFields(body, initPayload);
 
   const initContext = {};
@@ -969,6 +987,8 @@ function handleVideoPlayInstantRequest(body = {}) {
   if (typeof body.autoclose === "boolean") {
     playPayload.autoclose = body.autoclose;
   }
+  if (typeof body.streamType === "string") playPayload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") playPayload.streamConfig = body.streamConfig;
 
   const { delivered: deliverPlay } = deliverPayloadToTarget(target, playPayload, {}, { displayName });
 
@@ -1003,6 +1023,8 @@ function handleVideoPreloadRequest(body = {}) {
   const payload = { type: "VIDEO_PRELOAD", url };
   if (typeof body.volume === "number") payload.volume = body.volume;
   if (typeof body.muted === "boolean") payload.muted = body.muted;
+  if (typeof body.streamType === "string") payload.streamType = body.streamType;
+  if (body.streamConfig && typeof body.streamConfig === "object") payload.streamConfig = body.streamConfig;
 
   const context = {};
   if (body.sessionId != null) context.sessionId = body.sessionId;
@@ -1027,6 +1049,10 @@ function handleVideoInitializePlaylistRequest(body = {}) {
       if (typeof item.muted === "boolean") normalized.muted = item.muted;
       if (typeof item.autoclose === "boolean") normalized.autoclose = item.autoclose;
       if (Number.isFinite(item.atMs)) normalized.atMs = item.atMs;
+      if (typeof item.streamType === "string") normalized.streamType = item.streamType;
+      if (item.streamConfig && typeof item.streamConfig === "object") {
+        normalized.streamConfig = item.streamConfig;
+      }
       return normalized;
     })
     .filter((entry) => entry != null);
