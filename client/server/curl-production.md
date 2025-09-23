@@ -70,10 +70,19 @@ curl -X POST https://audio.wondercraftmc.nl/api/admin/video/close \
 ```
 
 ## POST /admin/video/play-instant
+Supports the same optional visual keys as `/admin/video/init`.
+
 ```sh
 curl -X POST https://audio.wondercraftmc.nl/api/admin/video/play-instant \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
-  -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
+  -d '{
+        "regionId": "spawn",
+        "url": "https://example.com/video.mp4",
+        "autoclose": true,
+        "backgroundImageUrl": "https://example.com/poster.jpg",
+        "backgroundImageTarget": "modal",
+        "backgroundImageSize": "cover"
+      }'
 ```
 
 ## POST /admin/video/preload

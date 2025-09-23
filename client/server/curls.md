@@ -141,7 +141,15 @@ curl -X POST http://localhost:8080/admin/video/close \
 ```
 
 ## POST /admin/video/play-instant
-Convenience: init and immediately play. Optional: `startAtEpochMs`, `startOffsetMs`, `muted`, `volume`, `sessionId`, `autoclose`.
+Convenience: init and immediately play.
+
+Optional playback: `startAtEpochMs`, `startOffsetMs`, `muted`, `volume`, `sessionId`, `autoclose`.
+
+Optional visuals (same as `/admin/video/init`):
+`backgroundImageUrl`, `backgroundImageTarget` (`"backdrop"` or `"modal"`),
+`backgroundImagePosition` (or `backgroundImagePositionX`/`backgroundImagePositionY`),
+`backgroundImageRepeat`, `backgroundImageSize`, `backgroundImageAttachment`,
+`backdropBackgroundColor`, `modalBackgroundColor`.
 
 ```sh
 curl -X POST http://localhost:8080/admin/video/play-instant \
@@ -152,7 +160,11 @@ curl -X POST http://localhost:8080/admin/video/play-instant \
         "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
         "muted": false,
         "volume": 1.0,
-        "autoclose": true
+        "autoclose": true,
+        "backgroundImageUrl": "https://example.com/poster.jpg",
+        "backgroundImageTarget": "modal",
+        "backgroundImageSize": "cover",
+        "backdropBackgroundColor": "rgba(0,0,0,0.7)"
       }'
 ```
 

@@ -400,7 +400,7 @@
       return;
     }
 
-    const targetKey = cfg.backgroundImageTarget === 'modal' ? 'modal' : 'backdrop';
+    const targetKey = 'backdrop';
     const targetEl = ui[targetKey];
     if (!targetEl) {
       return;
@@ -416,7 +416,8 @@
     const size = sanitizeNonEmptyString(cfg.backgroundImageSize) || 'cover';
     const attachment = sanitizeNonEmptyString(cfg.backgroundImageAttachment);
 
-    targetEl.style.setProperty('background-image', `url("${imageUrl.replace(/"/g, '\"')}")`);
+    // Apply a slight darkening overlay on top of the image for readability
+    targetEl.style.setProperty('background-image', `linear-gradient(rgba(0,0,0,0.5), rgba(0,0,0,0.5)), url("${imageUrl.replace(/"/g, '\"')}")`);
     targetEl.style.setProperty('background-size', size);
     targetEl.style.setProperty('background-repeat', repeat);
     targetEl.style.setProperty('background-position', resolvedPosition || 'center center');

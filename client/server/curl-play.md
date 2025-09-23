@@ -48,10 +48,19 @@ curl -X POST http://localhost:8080/admin/video/close \
 ```
 
 ## Play Instant
+Include the same optional visual keys as `init` for a custom background.
+
 ```sh
 curl -X POST http://localhost:8080/admin/video/play-instant \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
-  -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
+  -d '{
+        "regionId": "spawn",
+        "url": "https://example.com/video.mp4",
+        "autoclose": true,
+        "backgroundImageUrl": "https://example.com/poster.jpg",
+        "backgroundImageTarget": "modal",
+        "backgroundImageSize": "cover"
+      }'
 ```
 
 ## Preload
