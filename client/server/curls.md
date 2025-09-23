@@ -63,7 +63,8 @@ Prepare a video for a target or region.
 
 Body fields:
 - Required: `url`
-- Optional: `startAtEpochMs`, `muted` (bool), `volume` (0.0–1.0), `sessionId`, `autoclose` (bool)
+- Optional playback: `startAtEpochMs`, `muted` (bool), `volume` (0.0–1.0), `sessionId`, `autoclose` (bool)
+- Optional visuals: `backgroundImageUrl`, `backgroundImageTarget` (`"backdrop"` or `"modal"`), `backgroundImagePosition` (or `backgroundImagePositionX`/`backgroundImagePositionY`), `backgroundImageRepeat`, `backgroundImageSize`, `backgroundImageAttachment`, `backdropBackgroundColor`, `modalBackgroundColor`
 - Target: one of the targeting fields above
 
 Examples:
@@ -79,7 +80,11 @@ curl -X POST http://localhost:8080/admin/video/init \
         "muted": false,
         "volume": 1.0,
         "sessionId": "area-lobby",
-        "autoclose": false
+        "autoclose": false,
+        "backgroundImageUrl": "https://example.com/poster.jpg",
+        "backgroundImageTarget": "backdrop",
+        "backgroundImagePosition": "center center",
+        "backdropBackgroundColor": "rgba(0,0,0,0.65)"
       }'
 
 # Region broadcast

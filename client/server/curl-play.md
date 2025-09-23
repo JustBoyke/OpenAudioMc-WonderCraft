@@ -17,6 +17,7 @@ curl -X POST http://localhost:8080/admin/video/init \
   -H "Content-Type: application/json" -H "x-admin-key: changeme" \
   -d '{"regionId":"spawn","url":"https://example.com/video.mp4","autoclose":true}'
 ```
+Add optional presentation keys like `backgroundImageUrl`, `backgroundImageTarget`, `backgroundImagePosition`, `backgroundImageRepeat`, `backgroundImageSize`, and `backdropBackgroundColor`/`modalBackgroundColor` to style the player shell.
 
 ## Play
 ```sh
