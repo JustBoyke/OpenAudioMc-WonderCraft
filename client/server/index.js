@@ -221,6 +221,12 @@ function registerMediaCommand(store, key, payload, context = {}) {
   }
 
   pruneStaleMedia();
+
+  // Broadcast updates to admin dashboards
+  try {
+    broadcastAdminConnections();
+    broadcastAdminRegions();
+  } catch { /* ignore */ }
 }
 
 function rememberRegionDisplayName(regionId, displayName) {
@@ -347,6 +353,12 @@ function assignRegionForToken(token, regionId, options = {}) {
     info.region = canonical || null;
     info.regionDisplayName = canonical ? getRegionDisplayName(canonical) : null;
   }
+
+  // Broadcast region membership + connections update
+  try {
+    broadcastAdminConnections();
+    broadcastAdminRegions();
+  } catch { /* ignore */ }
 
   return { changed: true, previous, regionId: canonical };
 }
@@ -492,6 +504,12 @@ function handleClientVideoState(token, message = {}) {
       }
     }
   }
+
+  // Notify admins of state changes
+  try {
+    broadcastAdminConnections();
+    broadcastAdminRegions();
+  } catch { /* ignore */ }
 }
 
 function sendToClientByToken(token, payload, context) {
@@ -630,6 +648,8 @@ function updateClientIdentity(token, patch = {}) {
   info.lastSeen = Date.now();
 
   applyRegionForClient(token, info);
+  // Notify admins of identity/connection changes
+  try { broadcastAdminConnections(); } catch { /* ignore */ }
 }
 
 function buildError(status, message) {
@@ -1088,8 +1108,31 @@ app.post("/admin/video/initialize-playlist", requireAdmin, (req, res) => {
 });
 
 app.get("/admin/video/connections", requireAdmin, (_req, res) => {
+  const connections = buildConnectionsData();
+  return res.json({ ok: true, connections });
+});
+
+app.get("/admin/video/regions", requireAdmin, (_req, res) => {
+  const regions = buildRegionsData();
+  return res.json({ ok: true, regions });
+});
+
+// Simple health
+app.get("/healthz", (req, res) => res.json({ ok: true }));
+
+const server = http.createServer(app);
+
+// --- WebSocket server ---
+const pluginWss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true });
+const adminWss = new WebSocketServer({ noServer: true });
+
+const pluginClients = new Set();
+const adminClients = new Set();
+
+function buildConnectionsData() {
   const now = Date.now();
-  const connections = Array.from(clientsByToken.entries()).map(([token, info]) => ({
+  return Array.from(clientsByToken.entries()).map(([token, info]) => ({
     token,
     playerId: info.playerId,
     playerUuid: info.playerUuid,
@@ -1107,21 +1150,20 @@ app.get("/admin/video/connections", requireAdmin, (_req, res) => {
       if (!media || !media.state || media.state.status === 'idle') return null;
       return {
         sessionId: media.sessionId || null,
-        init: media.init || null,
-        state: media.state,
+        init: snapshotPayload(media.init),
+        state: snapshotPayload(media.state),
         lastUpdate: media.lastUpdate,
       };
     })(),
   }));
-  return res.json({ ok: true, connections });
-});
+}
 
-app.get("/admin/video/regions", requireAdmin, (_req, res) => {
+function buildRegionsData() {
   const regionIds = new Set();
   for (const key of tokensByRegion.keys()) regionIds.add(key);
   for (const key of activeMediaByRegion.keys()) regionIds.add(key);
 
-  const regions = Array.from(regionIds).map((regionId) => {
+  return Array.from(regionIds).map((regionId) => {
     const displayName = getRegionDisplayName(regionId);
     const members = Array.from(tokensByRegion.get(regionId) || []).map((token) => {
       const info = clientsByToken.get(token);
@@ -1158,20 +1200,33 @@ app.get("/admin/video/regions", requireAdmin, (_req, res) => {
       lastUpdate: record?.lastUpdate || null,
     };
   });
+}
 
-  return res.json({ ok: true, regions });
-});
+function broadcastAdmin(type, payloadBuilder) {
+  if (!adminClients.size) return;
+  const payload = typeof payloadBuilder === 'function' ? payloadBuilder() : payloadBuilder;
+  const json = JSON.stringify({ type, ...payload });
+  for (const ws of adminClients) {
+    if (ws.readyState === 1) {
+      try { ws.send(json); } catch { /* ignore */ }
+    }
+  }
+}
 
-// Simple health
-app.get("/healthz", (req, res) => res.json({ ok: true }));
+function broadcastAdminSnapshot() {
+  broadcastAdmin('ADMIN_SNAPSHOT', () => ({
+    connections: buildConnectionsData(),
+    regions: buildRegionsData(),
+  }));
+}
 
-const server = http.createServer(app);
+function broadcastAdminConnections() {
+  broadcastAdmin('ADMIN_CONNECTIONS', () => ({ connections: buildConnectionsData() }));
+}
 
-// --- WebSocket server ---
-const pluginWss = new WebSocketServer({ noServer: true });
-const wss = new WebSocketServer({ noServer: true });
-
-const pluginClients = new Set();
+function broadcastAdminRegions() {
+  broadcastAdmin('ADMIN_REGIONS', () => ({ regions: buildRegionsData() }));
+}
 
 function resetInMemoryStores() {
   clientsByToken.clear();
@@ -1279,6 +1334,25 @@ pluginWss.on("connection", (ws) => {
   });
 });
 
+adminWss.on("connection", (ws) => {
+  adminClients.add(ws);
+
+  // Send initial snapshot immediately
+  try {
+    ws.send(JSON.stringify({
+      type: "ADMIN_SNAPSHOT",
+      connections: buildConnectionsData(),
+      regions: buildRegionsData(),
+    }));
+  } catch { /* ignore */ }
+
+  const iv = setInterval(() => heartbeat(ws), 10000);
+  ws.on("close", () => {
+    clearInterval(iv);
+    adminClients.delete(ws);
+  });
+});
+
 wss.on("connection", async (ws, request) => {
   const params = new URLSearchParams(request.url.split("?")[1] || "");
   const token = params.get("token");
@@ -1310,6 +1384,10 @@ wss.on("connection", async (ws, request) => {
     regionDisplayName: null,
   });
   tokenToPlayerId.set(token, playerId);
+  try {
+    broadcastAdminConnections();
+    broadcastAdminRegions();
+  } catch { /* ignore */ }
 
   // greet and start ping loop
   ws.send(JSON.stringify({
@@ -1385,6 +1463,10 @@ wss.on("connection", async (ws, request) => {
     assignRegionForToken(token, null, { alreadyCanonical: true });
     clientsByToken.delete(token);
     tokenToPlayerId.delete(token);
+    try {
+      broadcastAdminConnections();
+      broadcastAdminRegions();
+    } catch { /* ignore */ }
   });
 });
 
@@ -1402,6 +1484,16 @@ server.on("upgrade", (req, socket, head) => {
       return;
     }
     pluginWss.handleUpgrade(req, socket, head, (ws) => pluginWss.emit("connection", ws, req));
+  } else if (req.url.startsWith("/ws/admin")) {
+    const params = new URLSearchParams(req.url.split("?")[1] || "");
+    const provided = params.get("key") || params.get("adminKey") || params.get("auth");
+    const expected = process.env.ADMIN_KEY;
+    if (expected && provided !== expected) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    adminWss.handleUpgrade(req, socket, head, (ws) => adminWss.emit("connection", ws, req));
   } else {
     socket.destroy();
   }
@@ -1418,6 +1510,7 @@ module.exports = {
   server,
   pluginWss,
   wss,
+  adminWss,
   applyRegionForClient,
   assignRegionForPlayerKey,
   assignRegionForPlayerKeys,
@@ -1443,5 +1536,7 @@ module.exports = {
     regionByPlayerKey,
     regionDisplayNames,
     resetInMemoryStores,
+    buildConnectionsData,
+    buildRegionsData,
   },
 };

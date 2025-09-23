@@ -5,6 +5,9 @@
     lastConnections: [],
     lastRegions: [],
     activeTab: 'connections',
+    adminWs: null,
+    wsConnected: false,
+    wsReconnectAttempts: 0,
   };
 
   const basePath = (() => {
@@ -75,6 +78,85 @@
     }
   }
 
+  function connectAdminWs() {
+    if (!state.adminKey) return;
+    try { if (state.adminWs && state.adminWs.readyState === WebSocket.OPEN) return; } catch {}
+
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${proto}://${window.location.host}${basePath}/ws/admin?key=${encodeURIComponent(state.adminKey)}`;
+
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      return; // fallback to polling
+    }
+    state.adminWs = ws;
+
+    ws.onopen = () => {
+      state.wsConnected = true;
+      state.wsReconnectAttempts = 0;
+      setStatus('Live updates connected', 'ok');
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (!msg || typeof msg !== 'object') return;
+        switch (msg.type) {
+          case 'ADMIN_SNAPSHOT':
+            if (Array.isArray(msg.connections)) state.lastConnections = msg.connections;
+            if (Array.isArray(msg.regions)) state.lastRegions = msg.regions;
+            renderConnectionRows(state.lastConnections);
+            renderRegionRows(state.lastRegions);
+            connCountEl.textContent = state.lastConnections.length;
+            if (regionCountEl) {
+              const activeRegions = state.lastRegions.filter((r) => r.activeMedia).length;
+              regionCountEl.textContent = activeRegions;
+            }
+            lastRefreshEl.textContent = new Date().toLocaleTimeString();
+            break;
+          case 'ADMIN_CONNECTIONS':
+            if (Array.isArray(msg.connections)) {
+              state.lastConnections = msg.connections;
+              renderConnectionRows(state.lastConnections);
+              connCountEl.textContent = state.lastConnections.length;
+              lastRefreshEl.textContent = new Date().toLocaleTimeString();
+            }
+            break;
+          case 'ADMIN_REGIONS':
+            if (Array.isArray(msg.regions)) {
+              state.lastRegions = msg.regions;
+              renderRegionRows(state.lastRegions);
+              if (regionCountEl) {
+                const activeRegions = state.lastRegions.filter((r) => r.activeMedia).length;
+                regionCountEl.textContent = activeRegions;
+              }
+              lastRefreshEl.textContent = new Date().toLocaleTimeString();
+            }
+            break;
+          default:
+            break;
+        }
+      } catch { /* ignore */ }
+    };
+
+    ws.onclose = () => {
+      state.wsConnected = false;
+      state.adminWs = null;
+      const attempt = (state.wsReconnectAttempts || 0) + 1;
+      state.wsReconnectAttempts = attempt;
+      const delay = Math.min(15000, 500 * Math.pow(2, attempt));
+      setTimeout(() => {
+        if (state.adminKey) connectAdminWs();
+      }, delay);
+    };
+
+    ws.onerror = () => {
+      // handled by onclose
+    };
+  }
+
   function getHeaders() {
     if (!state.adminKey) return {};
     return {
@@ -119,6 +201,56 @@
       return { status: 'paused', positionMs: state.pausedAtMs ?? 0 };
     }
     return { status: state.status || 'idle', positionMs: 0 };
+  }
+
+  // Preserve in-row input state across refreshes
+  function captureInputState(tbody, keyAttr) {
+    const snapshot = new Map();
+    if (!tbody) return snapshot;
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.forEach((row) => {
+      const key = row.dataset && row.dataset[keyAttr];
+      if (!key) return;
+      const input = row.querySelector('input[type="text"]');
+      if (!input) return;
+      const isFocused = document.activeElement === input;
+      let selStart = null;
+      let selEnd = null;
+      try {
+        selStart = input.selectionStart;
+        selEnd = input.selectionEnd;
+      } catch { /* ignore */ }
+      snapshot.set(key, {
+        value: input.value,
+        focused: isFocused,
+        selStart,
+        selEnd,
+      });
+    });
+    return snapshot;
+  }
+
+  function restoreInputState(tbody, keyAttr, snapshot) {
+    if (!tbody || !snapshot || snapshot.size === 0) return;
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.forEach((row) => {
+      const key = row.dataset && row.dataset[keyAttr];
+      if (!key) return;
+      const saved = snapshot.get(key);
+      if (!saved) return;
+      const input = row.querySelector('input[type="text"]');
+      if (!input) return;
+      // Only restore if user hasn't typed something new in this exact refresh window
+      input.value = saved.value;
+      if (saved.focused) {
+        input.focus({ preventScroll: true });
+        try {
+          if (saved.selStart != null && saved.selEnd != null) {
+            input.setSelectionRange(saved.selStart, saved.selEnd);
+          }
+        } catch { /* ignore */ }
+      }
+    });
   }
 
   function promptFallback(prefill = '') {
@@ -249,6 +381,7 @@
       openAuthModal('');
       return;
     }
+    if (state.wsConnected) return; // live updates active
 
     try {
       const headers = getHeaders();
@@ -297,6 +430,7 @@
   }
 
   function renderConnectionRows(connections) {
+    const inputSnapshot = captureInputState(connectionsBody, 'token');
     connectionsBody.innerHTML = '';
     if (!connections.length) {
       const row = document.createElement('tr');
@@ -314,6 +448,7 @@
       const position = computePosition(media);
       const autoclose = Boolean(media?.state?.autoclose);
       const row = document.createElement('tr');
+      row.dataset.token = conn.token;
 
       const tokenCell = document.createElement('td');
       tokenCell.className = 'token';
@@ -371,9 +506,11 @@
 
       connectionsBody.appendChild(row);
     });
+    restoreInputState(connectionsBody, 'token', inputSnapshot);
   }
 
   function renderRegionRows(regions) {
+    const inputSnapshot = captureInputState(regionsBody, 'regionId');
     regionsBody.innerHTML = '';
     if (!regions.length) {
       const row = document.createElement('tr');
@@ -391,6 +528,9 @@
       const position = computePosition(media);
       const autoclose = Boolean(media?.state?.autoclose);
       const row = document.createElement('tr');
+      if (region && region.regionId) {
+        row.dataset.regionId = region.regionId;
+      }
 
       const nameCell = document.createElement('td');
       const display = region.displayName || region.regionId || '—';
@@ -436,6 +576,7 @@
 
       regionsBody.appendChild(row);
     });
+    restoreInputState(regionsBody, 'regionId', inputSnapshot);
   }
 
   function createControls(connection) {
@@ -447,7 +588,7 @@
     const seekable = ['playing', 'paused', 'ready'].includes(status);
 
     items.push(
-      createActionButton('Play', () => openPlayModalForTarget(target), isPlaying, 'ghost')
+      createActionButton('Play', () => handlePlayClickForTarget(target, connection.activeMedia), isPlaying, 'ghost')
     );
     items.push(
       createActionButton('Pause', () => sendCommand('pause', target), isPaused, 'ghost')
@@ -494,7 +635,7 @@
     const seekable = ['playing', 'paused', 'ready'].includes(status);
 
     items.push(
-      createActionButton('Play', () => openPlayModalForTarget(target), isPlaying, 'ghost')
+      createActionButton('Play', () => handlePlayClickForTarget(target, region.activeMedia), isPlaying, 'ghost')
     );
     items.push(
       createActionButton('Pause', () => sendCommand('pause', target), isPaused, 'ghost')
@@ -517,6 +658,43 @@
     btn.disabled = disabled;
     btn.addEventListener('click', handler);
     return btn;
+  }
+
+  function handlePlayClickForTarget(target, media) {
+    const stateObj = media?.state || {};
+    const status = stateObj.status;
+    // If media is already initialized or paused, resume instead of asking for URL
+    if (status === 'paused') {
+      const payload = {};
+      if (Number.isFinite(stateObj.pausedAtMs)) {
+        const at = Math.max(0, stateObj.pausedAtMs);
+        payload.atMs = at;
+        payload.startAtEpochMs = Date.now() - at;
+      }
+      if (typeof stateObj.autoclose === 'boolean') payload.autoclose = stateObj.autoclose;
+      if (typeof stateObj.volume === 'number') payload.volume = stateObj.volume;
+      if (typeof stateObj.muted === 'boolean') payload.muted = stateObj.muted;
+      sendCommand('play', target, payload);
+      return;
+    }
+    if (status === 'ready' || media?.init) {
+      const payload = {};
+      if (Number.isFinite(stateObj.reportedPositionMs)) {
+        const at = Math.max(0, stateObj.reportedPositionMs);
+        payload.atMs = at;
+        payload.startAtEpochMs = Date.now() - at;
+      } else {
+        payload.atMs = 0;
+        payload.startAtEpochMs = Date.now();
+      }
+      if (typeof stateObj.autoclose === 'boolean') payload.autoclose = stateObj.autoclose;
+      if (typeof stateObj.volume === 'number') payload.volume = stateObj.volume;
+      if (typeof stateObj.muted === 'boolean') payload.muted = stateObj.muted;
+      sendCommand('play', target, payload);
+      return;
+    }
+    // No media set — ask for URL
+    openPlayModalForTarget(target);
   }
 
   function parseSeekInput(value) {
@@ -595,6 +773,7 @@
     adminKeyInput.value = trimmed;
     closeAuthModal();
     setStatus('Key applied. Fetching…');
+    connectAdminWs();
     fetchDashboardData(true);
   }
 
@@ -678,6 +857,9 @@
     logoutKeyBtn.addEventListener('click', () => {
       localStorage.removeItem('oaVideoAdminKey');
       state.adminKey = '';
+      try { if (state.adminWs) state.adminWs.close(); } catch {}
+      state.adminWs = null;
+      state.wsConnected = false;
       adminKeyInput.value = '';
       renderConnectionRows([]);
       renderRegionRows([]);
@@ -695,13 +877,14 @@
 
   if (state.adminKey) {
     setStatus('Using stored admin key. Fetching…');
+    connectAdminWs();
     fetchDashboardData(false);
   } else {
     openAuthModal('');
   }
 
   state.pollTimer = setInterval(() => {
-    if (!document.hidden) {
+    if (!document.hidden && !state.wsConnected) {
       fetchDashboardData(false);
     }
   }, 5000);
