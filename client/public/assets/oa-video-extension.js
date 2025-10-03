@@ -336,6 +336,8 @@
 
     video.setAttribute('controlsList', 'nodownload noplaybackrate nofullscreen');
     video.setAttribute('disablePictureInPicture', 'true');
+    video.setAttribute('crossorigin', 'anonymous');
+    video.crossOrigin = 'anonymous';
     video.controls = false;
 
     const suppressContextMenu = (event) => {
@@ -666,10 +668,22 @@
 
   function getStreamingLoader() { return window.__oaVideoLoadStreamingLib; }
 
+  function isLikelySafari() {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua);
+    const isSafariDesktop = /Safari\//.test(ua)
+      && !/(Chrome|CriOS|FxiOS|Edg|OPR|OPiOS)/.test(ua);
+    return isIOS || isSafariDesktop;
+  }
+
   function supportsNativeHls(video) {
     if (!video || typeof video.canPlayType !== 'function') return false;
-    const support = video.canPlayType('application/vnd.apple.mpegurl');
-    return support === 'probably' || support === 'maybe';
+    const primary = video.canPlayType('application/vnd.apple.mpegurl') || '';
+    const legacy = video.canPlayType('application/x-mpegURL') || '';
+    if (primary === 'probably' || legacy === 'probably') return true;
+    if (!isLikelySafari()) return false;
+    return primary === 'maybe' || legacy === 'maybe';
   }
 
   function detectStreamType(payload = {}, normalizedUrl = '') {
