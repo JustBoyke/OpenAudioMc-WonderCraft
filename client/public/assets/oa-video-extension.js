@@ -759,8 +759,27 @@
     }
 
     if (type === STREAM_TYPES.HLS) {
+      // Native HLS (Safari) path: wait for metadata before proceeding
       if (allowNativeFallback && supportsNativeHls(video)) {
         video.src = spec.normalizedUrl;
+        await new Promise((resolve) => {
+          if (video.readyState >= 1) return resolve();
+          const onReady = () => {
+            video.removeEventListener('loadedmetadata', onReady);
+            video.removeEventListener('canplay', onReady);
+            resolve();
+          };
+          const onDone = () => {
+            video.removeEventListener('loadedmetadata', onReady);
+            video.removeEventListener('canplay', onReady);
+            resolve();
+          };
+          video.addEventListener('loadedmetadata', onReady, { once: true });
+          video.addEventListener('canplay', onReady, { once: true });
+          video.addEventListener('error', onDone, { once: true });
+          video.addEventListener('abort', onDone, { once: true });
+          try { video.load?.(); } catch { /* ignore */ }
+        });
         lastStreamSpec = { ...spec, usingNative: true };
         activeStreamController = null;
         return true;
@@ -770,6 +789,24 @@
       if (HlsCtor?.isSupported && !HlsCtor.isSupported()) {
         if (supportsNativeHls(video)) {
           video.src = spec.normalizedUrl;
+          await new Promise((resolve) => {
+            if (video.readyState >= 1) return resolve();
+            const onReady = () => {
+              video.removeEventListener('loadedmetadata', onReady);
+              video.removeEventListener('canplay', onReady);
+              resolve();
+            };
+            const onDone = () => {
+              video.removeEventListener('loadedmetadata', onReady);
+              video.removeEventListener('canplay', onReady);
+              resolve();
+            };
+            video.addEventListener('loadedmetadata', onReady, { once: true });
+            video.addEventListener('canplay', onReady, { once: true });
+            video.addEventListener('error', onDone, { once: true });
+            video.addEventListener('abort', onDone, { once: true });
+            try { video.load?.(); } catch { /* ignore */ }
+          });
           lastStreamSpec = { ...spec, usingNative: true };
           activeStreamController = null;
           return true;
@@ -790,8 +827,35 @@
         }
       };
       instance.on?.(HlsCtor.Events.ERROR, handleError);
+      // Wait for manifest to be ready before returning
+      const readyPromise = new Promise((resolve, reject) => {
+        const onParsed = () => {
+          instance.off?.(HlsCtor.Events.MANIFEST_PARSED, onParsed);
+          instance.off?.(HlsCtor.Events.LEVEL_LOADED, onLevelLoaded);
+          resolve();
+        };
+        const onLevelLoaded = () => {
+          instance.off?.(HlsCtor.Events.MANIFEST_PARSED, onParsed);
+          instance.off?.(HlsCtor.Events.LEVEL_LOADED, onLevelLoaded);
+          resolve();
+        };
+        const onFatal = (_evt, data) => {
+          if (data?.fatal) {
+            instance.off?.(HlsCtor.Events.MANIFEST_PARSED, onParsed);
+            instance.off?.(HlsCtor.Events.LEVEL_LOADED, onLevelLoaded);
+            instance.off?.(HlsCtor.Events.ERROR, onFatal);
+            reject(new Error(`hls_fatal:${data?.details || data?.type || 'unknown'}`));
+          }
+        };
+        instance.on?.(HlsCtor.Events.MANIFEST_PARSED, onParsed);
+        instance.on?.(HlsCtor.Events.LEVEL_LOADED, onLevelLoaded);
+        instance.on?.(HlsCtor.Events.ERROR, onFatal);
+      });
+
       instance.attachMedia(video);
       instance.loadSource(spec.normalizedUrl);
+      await readyPromise.catch((err) => { throw err; });
+
       activeStreamController = {
         type: STREAM_TYPES.HLS,
         instance,
@@ -914,13 +978,22 @@
       playPromise.catch((err) => {
         const errorName = err?.name || '';
         dbg('Autoplay prevented or failed', errorName || err);
-        if (errorName === 'AbortError') {
-          dbg('Playback aborted during start; retrying shortly');
-          schedulePlayRetry(250);
+        // Retry quickly for transient readiness errors
+        if (errorName === 'AbortError' || errorName === 'NotSupportedError' || errorName === 'InvalidStateError') {
+          const hint = errorName === 'AbortError' ? 'retrying shortly' : 'waiting for stream readiness';
+          dbg(`Playback ${errorName}; ${hint}`);
+          setStatus('Loading…');
+          schedulePlayRetry(300);
           return;
         }
-        queuedPlayRequest = true;
-        setStatus('Waiting for activation');
+        // For real autoplay gating, queue until activation
+        if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
+          queuedPlayRequest = true;
+          setStatus('Waiting for activation');
+          return;
+        }
+        // Default: small retry
+        schedulePlayRetry(500);
       }).finally(() => {
         suppressPlayEvent = false;
       });
