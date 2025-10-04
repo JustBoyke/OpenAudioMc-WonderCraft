@@ -987,6 +987,22 @@
     clearPendingPlayRetry();
     suppressPlayEvent = true;
     queuedPlayRequest = false;
+    // If using streaming with hls.js, wait for playable readiness
+    if (lastStreamSpec && !lastStreamSpec.usingNative) {
+      const rs = ui.video.readyState || 0; // 0: HAVE_NOTHING .. 4: HAVE_ENOUGH_DATA
+      if (rs < 2) {
+        dbg('Delaying play until stream is ready', `readyState=${rs}`);
+        setStatus('Buffering…');
+        const onCanPlay = () => {
+          ui.video.removeEventListener('canplay', onCanPlay);
+          schedulePlayRetry(50);
+        };
+        ui.video.addEventListener('canplay', onCanPlay, { once: true });
+        schedulePlayRetry(200);
+        suppressPlayEvent = false;
+        return;
+      }
+    }
     const playPromise = ui.video.play();
     if (playPromise && typeof playPromise.then === 'function') {
       playPromise.catch((err) => {
