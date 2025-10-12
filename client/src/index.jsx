@@ -5,6 +5,17 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { reportVital } from './client/util/vitalreporter';
+import initializeDevToolsProtection from './devToolsProtection';
+
+const isDevToolsProtectionEnabled = () => {
+  const envValue = import.meta.env.VITE_BLOCK_DEVTOOLS;
+
+  if (typeof envValue === 'string') {
+    return envValue !== 'false';
+  }
+
+  return !import.meta.env.DEV;
+};
 
 // polyfill for url canParse
 if (!URL.canParse) {
@@ -19,6 +30,16 @@ if (!URL.canParse) {
       return false;
     }
   };
+}
+
+const devToolsCleanup = initializeDevToolsProtection({
+  enabled: isDevToolsProtectionEnabled(),
+});
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    devToolsCleanup();
+  });
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
