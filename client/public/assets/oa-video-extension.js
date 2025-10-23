@@ -102,6 +102,82 @@
   let pendingModalReveal = false;
   let pendingPlayPayload = null;
   let pendingPlayRetryTimer = null;
+  // ATC bubble state
+  let atcBubbleEl = null;
+  let atcMeta = null;
+  let atcPopupWin = null;
+
+  function hideAtcBubble() {
+    if (atcBubbleEl && atcBubbleEl.parentNode) {
+      try { atcBubbleEl.parentNode.removeChild(atcBubbleEl); } catch { /* ignore */ }
+    }
+    atcBubbleEl = null;
+  }
+
+  function openAtcPopup() {
+    try {
+      // If already open, focus the existing popup and keep the bubble visible
+      if (atcPopupWin && !atcPopupWin.closed) {
+        try { atcPopupWin.focus(); } catch { /* ignore */ }
+        return;
+      }
+      // Build WS URL identical to the video extension client WS
+      const wsUrl = new URL(VIDEO_WS_URL);
+      const token = currentToken || getOAToken();
+      if (token) wsUrl.searchParams.set('token', token);
+      if (identityCache?.playerUuid) wsUrl.searchParams.set('playerUuid', identityCache.playerUuid);
+      else if (identityCache?.playerName) wsUrl.searchParams.set('playerName', identityCache.playerName);
+      wsUrl.searchParams.set('role', 'atc');
+
+      const popupUrl = new URL('/atc-controls.html', window.location.origin);
+      popupUrl.searchParams.set('ws', wsUrl.toString());
+      if (atcMeta?.attraction_name) popupUrl.searchParams.set('attraction_name', atcMeta.attraction_name);
+
+      const width = 420; const height = 640;
+      const left = window.screenX + Math.max(0, window.innerWidth - width - 20);
+      const top = window.screenY + Math.max(0, window.innerHeight - height - 60);
+      atcPopupWin = window.open(
+        popupUrl.toString(),
+        'attraction-controls',
+        `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=no`,
+      );
+      // Do not hide the bubble on click; it only hides on ATC_HIDE
+    } catch { /* ignore */ }
+  }
+
+  function closeAtcPopup() {
+    try {
+      if (atcPopupWin && !atcPopupWin.closed) {
+        atcPopupWin.close();
+      }
+    } catch { /* ignore */ }
+    atcPopupWin = null;
+  }
+
+  function showAtcBubble(detail) {
+    atcMeta = detail || {};
+    if (atcBubbleEl) return; // already visible
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Open webcontrols';
+    btn.title = `Attractie Controls voor ${detail?.attraction_name || ''}`;
+    btn.style.position = 'fixed';
+    btn.style.right = '24px';
+    btn.style.bottom = '24px';
+    btn.style.zIndex = '100000';
+    btn.style.padding = '12px 20px';
+    btn.style.borderRadius = '9999px';
+    btn.style.border = 'none';
+    btn.style.color = '#ffffff';
+    btn.style.fontWeight = '600';
+    btn.style.boxShadow = '0 10px 15px -3px rgba(0,0,0,0.3), 0 4px 6px -2px rgba(0,0,0,0.2)';
+    btn.style.cursor = 'pointer';
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--primary-accent') || '#6366f1';
+    btn.style.backgroundColor = accent.trim() || '#6366f1';
+    btn.addEventListener('click', openAtcPopup);
+    document.body.appendChild(btn);
+    atcBubbleEl = btn;
+  }
 
   function clearPendingPlayRetry() {
     if (pendingPlayRetryTimer) {
@@ -1633,6 +1709,38 @@
 
   function handleMessage(msg) {
     switch (msg.type) {
+      case 'ATC_SHOW': {
+        try {
+          const detail = {
+            attraction_name: msg.attraction_name,
+            attraction_id: msg.attraction_id,
+            playername: msg.playername,
+            player_uuid: msg.player_uuid,
+            session_id: msg.session_id,
+          };
+          showAtcBubble(detail);
+        } catch { /* ignore */ }
+        break;
+      }
+
+      case 'ATC_HIDE': {
+        try { closeAtcPopup(); } catch { /* ignore */ }
+        try { hideAtcBubble(); } catch { /* ignore */ }
+        break;
+      }
+      case 'ATC_SHOW': {
+        try {
+          const detail = {
+            attraction_name: msg.attraction_name,
+            attraction_id: msg.attraction_id,
+            playername: msg.playername,
+            player_uuid: msg.player_uuid,
+            session_id: msg.session_id,
+          };
+          showAtcBubble(detail);
+        } catch { /* ignore */ }
+        break;
+      }
       case 'PING':
         updateTimeOffsetFromPing(msg.t);
         send({ type: 'PONG', tClient: Date.now(), tServer: msg.t });

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Attractie Controls</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #0b0b0b; color: #fff; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, "Apple Color Emoji", "Segoe UI Emoji"; }
+      .wrap { display: flex; align-items: center; justify-content: center; height: 100%; }
+      .box { opacity: 0.9; background: rgba(255,255,255,0.05); padding: 16px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); }
+      .muted { color: #cbd5e1; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="box">
+        <div id="status">Verbinding maken…</div>
+        <div class="muted" id="meta"></div>
+      </div>
+    </div>
+    <script>
+      (function() {
+        const params = new URLSearchParams(location.search);
+        const wsParam = params.get('ws') || '';
+        const attractionName = params.get('attraction_name') || '';
+        if (attractionName) {
+          document.title = `Attractie Controls voor ${attractionName}`;
+        }
+
+        document.getElementById('meta').textContent = attractionName ? `Attractie: ${attractionName}` : '';
+
+        if (!wsParam) {
+          document.getElementById('status').textContent = 'Geen WS URL gevonden';
+          return;
+        }
+
+        try {
+          const ws = new WebSocket(wsParam);
+          ws.onopen = function() { document.getElementById('status').textContent = 'Verbonden'; };
+          ws.onclose = function() { document.getElementById('status').textContent = 'Verbinding verbroken'; };
+          ws.onerror = function() { document.getElementById('status').textContent = 'Verbindingsfout'; };
+          // Empty UI for now; hook up later
+        } catch (e) {
+          document.getElementById('status').textContent = 'Kon geen verbinding maken';
+        }
+      })();
+    </script>
+  </body>
+  </html>
+

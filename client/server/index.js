@@ -26,6 +26,7 @@ app.use(express.json());
 
 // In-memory stores (replace with Redis if you want multiple instances)
 const clientsByToken = new Map(); // token -> { ws, playerId, lastSeen }
+const atcSocketsByToken = new Map(); // token -> Set<ws> (secondary popup connections)
 const tokenToPlayerId = new Map(); // optional helper if you map tokens => playerId
 const activeMediaByToken = new Map(); // token -> media state snapshot
 const activeMediaByRegion = new Map(); // regionId -> media state snapshot
@@ -1170,6 +1171,51 @@ app.get("/admin/video/regions", requireAdmin, (_req, res) => {
   return res.json({ ok: true, regions });
 });
 
+// --- ATC (Attraction Controls) ---
+function handleAtcShowRequest(body = {}) {
+  const target = resolveTarget(body);
+  if (!target) {
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
+  }
+
+  const attractionName = typeof body.attraction_name === 'string' ? body.attraction_name : null;
+  if (!attractionName) {
+    return buildError(400, "attraction_name required");
+  }
+
+  const payload = {
+    type: "ATC_SHOW",
+    attraction_name: attractionName,
+    attraction_id: body.attraction_id ?? null,
+    playername: body.playername ?? null,
+    player_uuid: body.player_uuid ?? null,
+    session_id: body.session_id ?? null,
+  };
+
+  const { response } = deliverPayloadToTarget(target, payload);
+  return { status: 200, body: response };
+}
+
+app.post("/admin/atc/show", requireAdmin, (req, res) => {
+  const { status, body } = handleAtcShowRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
+function handleAtcHideRequest(body = {}) {
+  const target = resolveTarget(body);
+  if (!target) {
+    return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
+  }
+  const payload = { type: "ATC_HIDE" };
+  const { response } = deliverPayloadToTarget(target, payload);
+  return { status: 200, body: response };
+}
+
+app.post("/admin/atc/hide", requireAdmin, (req, res) => {
+  const { status, body } = handleAtcHideRequest(req.body || {});
+  return res.status(status).json(body);
+});
+
 // Simple health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
@@ -1411,6 +1457,7 @@ wss.on("connection", async (ws, request) => {
   const token = params.get("token");
   const hintedPlayerUuid = params.get("playerUuid");
   const hintedPlayerName = params.get("playerName");
+  const role = (params.get("role") || params.get("atc") || "").toString().toLowerCase();
 
   // Validate token
   const result = await validateOAToken(token);
@@ -1424,71 +1471,81 @@ wss.on("connection", async (ws, request) => {
     playerId = hintedPlayerUuid || hintedPlayerName || `player-${token.slice(0, 6)}`;
   }
 
-  clientsByToken.set(token, {
-    ws,
-    playerId,
-    playerUuid: hintedPlayerUuid || null,
-    playerName: hintedPlayerName || null,
-    publicServerKey: null,
-    scope: null,
-    connectedAt: Date.now(),
-    lastSeen: Date.now(),
-    region: null,
-    regionDisplayName: null,
-  });
-  tokenToPlayerId.set(token, playerId);
-  try {
-    broadcastAdminConnections();
-    broadcastAdminRegions();
-  } catch { /* ignore */ }
+  const isAtc = role === 'atc' || role === '1' || role === 'true';
 
-  // greet and start ping loop
-  ws.send(JSON.stringify({
-    type: "HELLO_ACK",
-    serverEpochMs: Date.now(),
-    playerId,
-    playerName: hintedPlayerName || null,
-    playerUuid: hintedPlayerUuid || null,
-  }));
+  if (isAtc) {
+    // Secondary ATC popup connection: don't replace the primary mapping
+    let set = atcSocketsByToken.get(token);
+    if (!set) { set = new Set(); atcSocketsByToken.set(token, set); }
+    set.add(ws);
+  } else {
+    // Primary client mapping
+    clientsByToken.set(token, {
+      ws,
+      playerId,
+      playerUuid: hintedPlayerUuid || null,
+      playerName: hintedPlayerName || null,
+      publicServerKey: null,
+      scope: null,
+      connectedAt: Date.now(),
+      lastSeen: Date.now(),
+      region: null,
+      regionDisplayName: null,
+    });
+    tokenToPlayerId.set(token, playerId);
+    try {
+      broadcastAdminConnections();
+      broadcastAdminRegions();
+    } catch { /* ignore */ }
 
-  const pendingMedia = activeMediaByToken.get(token);
-  if (pendingMedia?.init) {
-    const initPayload = { ...pendingMedia.init, resume: true };
-    ws.send(JSON.stringify(initPayload));
+    // greet and start ping loop
+    ws.send(JSON.stringify({
+      type: "HELLO_ACK",
+      serverEpochMs: Date.now(),
+      playerId,
+      playerName: hintedPlayerName || null,
+      playerUuid: hintedPlayerUuid || null,
+    }));
 
-    const state = pendingMedia.state || {};
-    const now = Date.now();
-    if (state.status === 'playing') {
-      const positionMs = Math.max(now - (state.startedAtEpochMs ?? now), 0);
-      ws.send(JSON.stringify({
-        type: "VIDEO_PLAY",
-        serverEpochMs: now,
-        atMs: positionMs,
-        volume: state.volume,
-        muted: state.muted,
-        autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
-      }));
-    } else if (state.status === 'paused') {
-      ws.send(JSON.stringify({
-        type: "VIDEO_PAUSE",
-        atMs: state.pausedAtMs ?? 0,
-        volume: state.volume,
-        muted: state.muted,
-        autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
-      }));
+    const pendingMedia = activeMediaByToken.get(token);
+    if (pendingMedia?.init) {
+      const initPayload = { ...pendingMedia.init, resume: true };
+      ws.send(JSON.stringify(initPayload));
+
+      const state = pendingMedia.state || {};
+      const now = Date.now();
+      if (state.status === 'playing') {
+        const positionMs = Math.max(now - (state.startedAtEpochMs ?? now), 0);
+        ws.send(JSON.stringify({
+          type: "VIDEO_PLAY",
+          serverEpochMs: now,
+          atMs: positionMs,
+          volume: state.volume,
+          muted: state.muted,
+          autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
+        }));
+      } else if (state.status === 'paused') {
+        ws.send(JSON.stringify({
+          type: "VIDEO_PAUSE",
+          atMs: state.pausedAtMs ?? 0,
+          volume: state.volume,
+          muted: state.muted,
+          autoclose: state.autoclose ?? pendingMedia.init?.autoclose ?? false,
+        }));
+      }
     }
-  }
 
-  applyRegionForClient(token, clientsByToken.get(token));
+    applyRegionForClient(token, clientsByToken.get(token));
+  }
 
   const pingIv = setInterval(() => heartbeat(ws), 5000);
 
   ws.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      const clientInfo = clientsByToken.get(token);
-      if (clientInfo) {
-        clientInfo.lastSeen = Date.now();
+      if (!isAtc) {
+        const clientInfo = clientsByToken.get(token);
+        if (clientInfo) clientInfo.lastSeen = Date.now();
       }
 
       switch (msg.type) {
@@ -1499,12 +1556,12 @@ wss.on("connection", async (ws, request) => {
           handleClientVideoState(token, msg);
           break;
         case "HELLO":
-          updateClientIdentity(token, msg);
+          if (!isAtc) updateClientIdentity(token, msg);
           break;
         case "IDENTITY_UPDATE":
-          updateClientIdentity(token, msg);
+          if (!isAtc) updateClientIdentity(token, msg);
           break;
-        default:
+      default:
           break;
       }
     } catch { /* ignore */ }
@@ -1512,20 +1569,28 @@ wss.on("connection", async (ws, request) => {
 
   ws.on("close", () => {
     clearInterval(pingIv);
-    // Cleanup
-    assignRegionForToken(token, null, { alreadyCanonical: true });
-    clientsByToken.delete(token);
-    tokenToPlayerId.delete(token);
-    try {
-      broadcastAdminConnections();
-      broadcastAdminRegions();
-    } catch { /* ignore */ }
+    if (isAtc) {
+      const set = atcSocketsByToken.get(token);
+      if (set) {
+        set.delete(ws);
+        if (set.size === 0) atcSocketsByToken.delete(token);
+      }
+    } else {
+      // Cleanup primary
+      assignRegionForToken(token, null, { alreadyCanonical: true });
+      clientsByToken.delete(token);
+      tokenToPlayerId.delete(token);
+      try {
+        broadcastAdminConnections();
+        broadcastAdminRegions();
+      } catch { /* ignore */ }
+    }
   });
 });
 
 // Upgrade HTTP -> WS
 server.on("upgrade", (req, socket, head) => {
-  if (req.url.startsWith("/ws/video")) {
+  if (req.url.startsWith("/ws/video") || req.url.startsWith("/api/ws/video")) {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   } else if (req.url.startsWith("/ws/plugin")) {
     const params = new URLSearchParams(req.url.split("?")[1] || "");

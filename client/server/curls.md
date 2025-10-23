@@ -210,6 +210,71 @@ List known regions, members, and active media.
 curl http://localhost:8080/admin/video/regions -H "x-admin-key: changeme"
 ```
 
+---
+
+## POST /admin/atc/show
+Trigger the client to show the bottom-right "Open webcontrols" button for a specific player or region. The client video extension listens for this `ATC_SHOW` message and renders a popup button.
+
+Body:
+- Target: one of `token`, `playerId`, `playerUuid`, `playerName`, or `regionId`.
+- Data:
+  - `attraction_name` (required)
+  - `attraction_id` (optional)
+  - `playername` (optional)
+  - `player_uuid` (optional)
+  - `session_id` (optional)
+
+Examples:
+
+```sh
+# Target by player UUID
+curl -X POST http://localhost:8080/admin/atc/show \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "playerUuid": "a7b49cc2-2bdb-4e4e-aa45-95daadcc2369",
+        "attraction_name": "Vliegende Hollander",
+        "attraction_id": "vh-01",
+        "playername": "Steve",
+        "session_id": "session-123"
+      }'
+
+# Broadcast to a region
+curl -X POST http://localhost:8080/admin/atc/show \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "regionId": "spawn",
+        "attraction_name": "Baron 1898"
+      }'
+```
+
+## POST /admin/atc/hide
+Hide the "Open webcontrols" button and close the popup window for a target player or region by emitting `ATC_HIDE`.
+
+Body:
+- Target: one of `token`, `playerId`, `playerUuid`, `playerName`, or `regionId`.
+
+Examples:
+
+```sh
+# Hide for a specific player
+curl -X POST http://localhost:8080/admin/atc/hide \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "playerUuid": "a7b49cc2-2bdb-4e4e-aa45-95daadcc2369"
+      }'
+
+# Hide for a region
+curl -X POST http://localhost:8080/admin/atc/hide \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "regionId": "spawn"
+      }'
+```
+
 ## GET /healthz
 Simple health probe (no auth).
 
