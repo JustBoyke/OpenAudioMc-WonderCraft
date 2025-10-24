@@ -133,7 +133,7 @@
       popupUrl.searchParams.set('ws', wsUrl.toString());
       if (atcMeta?.attraction_name) popupUrl.searchParams.set('attraction_name', atcMeta.attraction_name);
 
-      const width = 420; const height = 640;
+      const width = 1260; const height = 640;
       const left = window.screenX + Math.max(0, window.innerWidth - width - 20);
       const top = window.screenY + Math.max(0, window.innerHeight - height - 60);
       atcPopupWin = window.open(

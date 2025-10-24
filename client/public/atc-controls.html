@@ -1,23 +1,155 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="nl">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Attractie Controls</title>
-    <style>
-      html, body { height: 100%; margin: 0; background: #0b0b0b; color: #fff; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, "Apple Color Emoji", "Segoe UI Emoji"; }
-      .wrap { display: flex; align-items: center; justify-content: center; height: 100%; }
-      .box { opacity: 0.9; background: rgba(255,255,255,0.05); padding: 16px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); }
-      .muted { color: #cbd5e1; font-size: 14px; }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <div class="box">
-        <div id="status">Verbinding maken…</div>
-        <div class="muted" id="meta"></div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Minecraft Rit Controle Paneel</title>
+  <style>
+    :root { --bg:#1a1c1f; --bg-2:#202327; --metal-edge:#2b2f35; --label:#cfd5dc; --danger:#ff3b30; --warn:#ffb020; --ok:#2ee36e; --muted:#8a929c; --ring:#3a3f46; --shadow:rgba(0,0,0,.55); }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:radial-gradient(1100px 700px at 50% 10%, #0f1113 0, #0b0c0e 40%, #07080a 100%); color:var(--label); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; }
+    .panel { width:clamp(960px, 92vw, 1200px); padding:28px 28px 34px; border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0) 14%), repeating-linear-gradient(90deg, #1c1f23 0 2px, #1a1c1f 2px 4px); box-shadow:0 25px 60px var(--shadow), inset 0 1px 0 rgba(255,255,255,.05), inset 0 -2px 0 rgba(0,0,0,.5); border:1px solid var(--metal-edge); position:relative; }
+    .panel:before { content:""; position:absolute; inset:14px; border-radius:14px; pointer-events:none; box-shadow: inset 0 0 0 1px #2a2e33, inset 0 18px 40px rgba(255,255,255,.02); }
+    header { display:flex; align-items:center; justify-content:space-between; padding:6px 8px 18px; gap:16px; margin-bottom:16px; border-bottom:1px solid #2a2e33; }
+    .title { font-weight:800; letter-spacing:.06em; text-transform:uppercase; display:flex; align-items:baseline; gap:12px; }
+    .title small { color:var(--muted); font-weight:600; letter-spacing:.12em; }
+    .status-bar { display:flex; gap:18px; align-items:center; }
+    .chip { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; font-weight:700; font-size:13px; background:#15171a; border:1px solid #2b2f33; box-shadow: inset 0 -1px 0 rgba(255,255,255,.04); }
+    .grid { display:grid; grid-template-columns: 1.1fr 1fr 1fr; gap:26px; align-items:start; }
+    .group { padding:18px; border-radius:14px; background:#121416; border:1px solid #2a2e33; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+    .group h3 { margin:0 0 12px; font-size:14px; text-transform:uppercase; letter-spacing:.16em; color:var(--muted); }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .label { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted); margin-top:10px; text-align:center; }
+    .lever-switch { width:160px; height:110px; margin:8px auto; position:relative; cursor:pointer; user-select:none; border-radius:16px; background:#0f1113; border:1px solid #2b3036; box-shadow: inset 0 8px 20px rgba(255,255,255,.03), inset 0 -12px 24px rgba(0,0,0,.6); display:grid; place-items:center; }
+    .lever-switch input{ display:none; }
+    .lever-switch .base{ position:absolute; bottom:18px; width:28px; height:28px; border-radius:50%; background:#23282d; border:1px solid #3a3f46; box-shadow: inset 0 2px 0 rgba(255,255,255,.1), inset 0 -2px 0 rgba(0,0,0,.6); left:50%; transform:translateX(-50%); }
+    .lever-switch .lever{ position:absolute; bottom:28px; left:50%; width:18px; height:66px; transform-origin:50% 100%; transform:translateX(-50%) rotate(-28deg); background: linear-gradient(#3a4046,#2b3036); border:1px solid #4a5057; border-radius:10px; box-shadow: 0 12px 22px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.15); transition: transform .18s cubic-bezier(.2,.8,.2,1); }
+    .lever-switch .label-track{ position:absolute; inset:12px; display:flex; align-items:center; justify-content:space-between; pointer-events:none; font-weight:900; letter-spacing:.16em; color:#b9c2cc; opacity:.8; }
+    .lever-switch input:checked + .lever{ transform:translateX(-50%) rotate(28deg); }
+    .lever-switch.disabled{ filter:grayscale(.6) opacity(.7); cursor:not-allowed; }
+    .mini-led{ width:14px; height:14px; border-radius:999px; border:1px solid #3a3f46; box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 0 10px transparent; display:inline-block; vertical-align:middle; }
+    .mini-led.on{ background: radial-gradient(circle at 40% 35%, #c9ffd8, var(--ok) 60%, #0b3b1e); box-shadow: 0 0 10px var(--ok); }
+    .mini-led.off{ background: radial-gradient(circle at 40% 35%, #ffd2d2, var(--danger) 60%, #460b0b); box-shadow: 0 0 10px var(--danger); }
+    .led{ width:90px; height:90px; margin:8px auto; border-radius:999px; position:relative; background: radial-gradient(45% 45% at 40% 40%, #000 0 40%, #060809 60%); border:1px solid var(--ring); box-shadow: inset 0 10px 26px rgba(0,0,0,.85), 0 20px 40px rgba(0,0,0,.4); }
+    .led .lamp{ position:absolute; inset:8px; border-radius:999px; background:#1a1d20; box-shadow: inset 0 14px 30px rgba(0,0,0,.9), inset 0 -10px 18px rgba(255,255,255,.06); filter: drop-shadow(0 0 0 rgba(0,0,0,0)); transition: background .2s ease; }
+    .led.ok .lamp{ background: radial-gradient(60% 60% at 35% 30%, rgba(255,255,255,.25), rgba(255,255,255,0) 50%), radial-gradient(50% 50% at 50% 55%, var(--ok), #0b3b1e 70%, #092313 100%); box-shadow: inset 0 10px 30px rgba(0,0,0,.7); }
+    .led.warn .lamp{ background: radial-gradient(60% 60% at 35% 30%, rgba(255,255,255,.25), rgba(255,255,255,0) 50%), radial-gradient(50% 50% at 50% 55%, var(--warn), #3a2600 70%, #221500 100%); }
+    .led.err .lamp{ background: radial-gradient(60% 60% at 35% 30%, rgba(255,255,255,.2), rgba(255,255,255,0) 50%), radial-gradient(50% 50% at 50% 55%, var(--danger), #460b0b 70%, #210406 100%); }
+    @keyframes flash{ 0%,12%{ filter:drop-shadow(0 0 0 rgba(0,0,0,0)); } 13%,50%{ filter:drop-shadow(0 0 12px currentColor) drop-shadow(0 0 24px currentColor); } 51%,100%{ filter:drop-shadow(0 0 0 rgba(0,0,0,0)); } }
+    .led.flash .lamp{ animation: flash 1.2s infinite; color: currentColor; }
+    .push{ width:140px; height:140px; margin:8px auto; border-radius:999px; position:relative; cursor:pointer; background: radial-gradient(60% 60% at 45% 35%, #2e3b2f, #0c130d 70%); border:2px solid #39433d; box-shadow:0 20px 40px rgba(0,0,0,.55), inset 0 2px 0 rgba(255,255,255,.12), inset 0 -4px 0 rgba(0,0,0,.7); transform: translateY(0); transition: transform .05s ease; }
+    .push .cap{ position:absolute; inset:12px; border-radius:999px; display:grid; place-items:center; font-weight:900; letter-spacing:.22em; color:#e9ffee; text-shadow:0 2px 10px rgba(0,0,0,.6); background: radial-gradient(65% 65% at 40% 35%, #5bf3a0, #15a24e 55%, #0b5c2c 100%); box-shadow: inset 0 16px 32px rgba(255,255,255,.18), inset 0 -18px 36px rgba(0,0,0,.55); }
+    .push:active{ transform: translateY(3px); }
+    .push.off .cap{ filter:grayscale(.9) brightness(.6); }
+    .push.locked{ filter:grayscale(.7) opacity(.7); cursor:not-allowed; }
+    .rect{ width:180px; height:72px; margin:8px auto; position:relative; border-radius:12px; cursor:pointer; background: linear-gradient(#3a0e10,#220708); border:2px solid #4b1a1d; box-shadow:0 12px 28px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.06), inset 0 -3px 0 rgba(0,0,0,.6); }
+    .rect .face{ position:absolute; inset:8px; border-radius:8px; display:grid; place-items:center; font-weight:900; letter-spacing:.22em; color:#ffeaee; background: linear-gradient(#8a2229,#671a20); }
+    .rect.off .face{ filter:grayscale(.8) brightness(.7); }
+    .note{ text-align:center; color:var(--muted); margin-top:4px; font-size:12px; }
+    .ctl{ text-align:center; }
+    .readout{ margin-top:10px; padding:12px 14px; border-radius:10px; background:#0d0f12; border:1px solid #293039; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color:#bfe0ff; box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+    .kbd{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background:#0f1317; border:1px solid #30363d; padding:2px 6px; border-radius:6px; }
+    .sensors{ display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:10px; }
+    .sensor{ background:#0f1215; border:1px solid #2a2f35; padding:6px 10px; border-radius:999px; font-size:12px; letter-spacing:.08em; display:flex; gap:8px; align-items:center; }
+    .sensor.ok{ border-color:#264b33; }
+    .sensor.bad{ border-color:#4b2626; }
+    @media (max-width:980px){ .grid{ grid-template-columns:1fr; } .row{ grid-template-columns:repeat(2,1fr); } }
+    .info{ color:#3bb3ff; }
+    .led.info .lamp{ background: radial-gradient(60% 60% at 35% 30%, rgba(255,255,255,.25), rgba(255,255,255,0) 50%), radial-gradient(50% 50% at 50% 55%, #3bb3ff, #0c2a3d 70%, #06141e 100%); }
+    .locked-panel{ filter:grayscale(.5) brightness(.9); }
+    .locked-panel .group{ opacity:.7; }
+    .lock-overlay{ position:absolute; inset:0; pointer-events:none; border-radius:22px; box-shadow: inset 0 0 0 2px rgba(255,0,0,.4), inset 0 0 120px rgba(255,0,0,.08); }
+    .emerg-toggle{ position:fixed; right:12px; bottom:10px; font-size:11px; color:#9fb3c8; opacity:.6; cursor:pointer; user-select:none; }
+    .emerg-toggle:hover{ opacity:1; text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="panel" role="application" aria-label="Rit Controle Paneel">
+    <header>
+      <div class="title">RIT CONTROLE <small>WonderCraftMC</small><span id="meta"></span></div>
+      <div class="status-bar">
+        <div class="chip" id="connChip"><span>●</span> <span id="status"></span></div>
+        <div class="chip"><span id="clock">--:--:--</span></div>
+        <div class="chip">Status: <span id="stateText" style="margin-left:6px;font-weight:900">UIT</span></div>
       </div>
-    </div>
+    </header>
+    <div class="lock-overlay" id="lockOverlay" hidden></div>
+
+    <main class="grid">
+      <section class="group">
+        <h3>Stroom & Bediening</h3>
+        <div class="ctl">
+          <label class="lever-switch" id="powerSwitch" aria-label="Hoofdschakelaar">
+            <input id="power" type="checkbox" />
+            <div class="lever"></div>
+            <div class="base"></div>
+            <div class="label-track"><span>UIT</span><span>AAN</span></div>
+          </label>
+          <div class="label">Stroom <span id="powerLed" class="mini-led off" title="Stroom"></span></div>
+          <div class="note">Sneltoets: <span class="kbd">P</span></div>
+        </div>
+        <div class="ctl">
+          <label class="lever-switch disabled" id="openSwitch" aria-label="Attractie open/dicht">
+            <input id="openAttraction" type="checkbox" disabled />
+            <div class="lever"></div>
+            <div class="base"></div>
+            <div class="label-track"><span>DICHT</span><span>OPEN</span></div>
+          </label>
+          <div class="label">Attractie <span id="openLed" class="mini-led off" title="Attractie"></span></div>
+          <div class="note">Sneltoets: <span class="kbd">O</span></div>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>Ritstatus</h3>
+        <div class="ctl">
+          <div class="led err flash" id="rideLed" aria-live="polite"><div class="lamp"></div></div>
+          <div class="label" id="rideLabel">Uit</div>
+          <div class="sensors">
+            <div id="sPower" class="sensor bad"><span>⚡ Stroom</span></div>
+            <div id="sTrain" class="sensor bad"><span>🚉 Trein in station</span></div>
+            <div id="sGates" class="sensor bad"><span>🚪 Poorten dicht</span></div>
+            <div id="sBrackets" class="sensor bad"><span>🗜️ Beugels vast</span></div>
+          </div>
+          <div class="readout" id="readout">Wachten op stroom…</div>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>Bediening</h3>
+        <div class="row">
+          <div class="ctl">
+            <label class="lever-switch" aria-label="Station poorten">
+              <input id="gates" type="checkbox" />
+              <div class="lever"></div>
+              <div class="base"></div>
+              <div class="label-track"><span>DICHT</span><span>OPEN</span></div>
+            </label>
+            <div class="label">Poorten</div>
+            <div class="note">Toggle (<span class="kbd">G</span>)</div>
+          </div>
+
+          <div class="ctl">
+            <button id="brackets" class="rect off" aria-pressed="false" aria-label="Veiligheidsbeugels">
+              <span class="face">BEUGELS</span>
+            </button>
+            <div class="label">Beugels</div>
+            <div class="note">Toggle vergrendel (<span class="kbd">B</span>)</div>
+          </div>
+
+          <div class="ctl" style="grid-column: span 2;">
+            <button id="dispatch" class="push off locked" aria-label="Verstuur trein">
+              <span class="cap">VERTREK</span>
+            </button>
+            <div class="label">Vertrek</div>
+            <div class="note">Houden/klik om te versturen (<span class="kbd">Spatie</span>)</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="emTest" class="emerg-toggle" title="Toggle noodstop (test)">toggle emergency</div>
+    <div class="note" style="margin-top:18px">Dit is een front-end simulatie. Koppel deze bediening later aan je websocket/REST events.</div>
+  </div>
     <script>
       (function() {
         const params = new URLSearchParams(location.search);
@@ -45,6 +177,231 @@
         }
       })();
     </script>
+
+<script>
+    // DOM refs
+    const power = document.getElementById('power');
+    const powerLed = document.getElementById('powerLed');
+    const openAttraction = document.getElementById('openAttraction');
+    const openSwitch = document.getElementById('openSwitch');
+    const openLed = document.getElementById('openLed');
+
+    const gates = document.getElementById('gates');
+    const bracketsBtn = document.getElementById('brackets');
+    const dispatchBtn = document.getElementById('dispatch');
+    const emTest = document.getElementById('emTest');
+    const lockOverlay = document.getElementById('lockOverlay');
+
+    const rideLed = document.getElementById('rideLed');
+    const rideLabel = document.getElementById('rideLabel');
+    const stateText = document.getElementById('stateText');
+    const readout = document.getElementById('readout');
+
+    const sPower = document.getElementById('sPower');
+    const sTrain = document.getElementById('sTrain');
+    const sGates = document.getElementById('sGates');
+    const sBrackets = document.getElementById('sBrackets');
+
+    // Machine status
+    const STATE = { OFF:'OFF', IDLE:'IDLE', ARMED:'ARMED', RUNNING:'RUNNING', RETURNED:'RETURNED', EMERGENCY:'EMERGENCY' };
+    const STATE_NL = { OFF:'UIT', IDLE:'WACHT', ARMED:'GEREED', RUNNING:'ACTIEF', RETURNED:'IN STATION', EMERGENCY:'NOODSTOP' };
+
+    let state = STATE.OFF;
+    let treinInStation = false; // sensor
+    let beugelsVast = false;
+    let emergencyActive = false;
+
+    // --- Utilities ---
+    function log(msg){ const t = new Date().toLocaleTimeString('nl-NL', {hour12:false}); readout.textContent = `[${t}] ${msg}`; }
+    function setBadge(el, ok){ el.classList.toggle('ok', ok); el.classList.toggle('bad', !ok); el.style.opacity = ok ? 1 : .7; }
+    function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+    function setState(newState, note){ state = newState; stateText.textContent = STATE_NL[newState] || newState; if (note) log(note); updateSensors(); updateLeds(); updateDispatchLock(); }
+
+    // --- Visual updates ---
+    function updateSensors(){
+      // LED's bijwerken
+      powerLed.className = 'mini-led ' + (power.checked ? 'on' : 'off');
+      openLed.className = 'mini-led ' + (openAttraction.checked ? 'on' : 'off');
+
+      // Trein in station indien systeem niet rijdt maar wel stroom heeft
+      treinInStation = power.checked && state !== STATE.RUNNING;
+
+      setBadge(sPower, power.checked);
+      setBadge(sTrain, treinInStation);
+      setBadge(sGates, !gates.checked);
+      setBadge(sBrackets, beugelsVast);
+
+      // Veiligheid: poorten/beugels alleen bedienbaar als trein in station en geen noodstop
+      const blockOps = !treinInStation || state === STATE.OFF || emergencyActive;
+      gates.disabled = blockOps;
+      bracketsBtn.disabled = blockOps;
+    }
+
+    function updateLeds(){
+      rideLed.classList.remove('ok','warn','err','flash','info');
+      switch(state){
+        case STATE.OFF:      rideLed.classList.add('err');        rideLabel.textContent = 'Uit'; break;
+        case STATE.IDLE:     rideLed.classList.add('warn','flash'); rideLabel.textContent = 'Wachten'; break;
+        case STATE.ARMED:    rideLed.classList.add('ok','flash');  rideLabel.textContent = 'Gereed'; break;
+        case STATE.RUNNING:  rideLed.classList.add('ok');          rideLabel.textContent = 'Rijdt'; break;
+        case STATE.RETURNED: rideLed.classList.add('info');        rideLabel.textContent = 'In station'; break;
+        case STATE.EMERGENCY:rideLed.classList.add('err','flash'); rideLabel.textContent = 'EMERGENCY STOP'; break;
+      }
+    }
+
+    // Interlocks
+    function kanVertrekken(){ return !emergencyActive && power.checked && treinInStation && !gates.checked && beugelsVast; }
+
+    function updateDispatchLock(){ const allow = kanVertrekken(); dispatchBtn.classList.toggle('locked', !allow); if (!power.checked) dispatchBtn.classList.add('off'); else dispatchBtn.classList.remove('off'); }
+
+    function setBrackets(locked){ beugelsVast = !!locked; bracketsBtn.classList.toggle('off', !locked); bracketsBtn.setAttribute('aria-pressed', String(locked)); updateSensors(); updateDispatchLock(); }
+
+    function maybeArm(){ if (power.checked && !gates.checked && beugelsVast && state !== STATE.RUNNING){ setState(STATE.ARMED, 'Alle checks OK. Gereed voor vertrek.'); } else if (power.checked && state !== STATE.RUNNING) { setState(STATE.IDLE); } }
+
+    // --- Events ---
+    power.addEventListener('change', () => {
+      if (power.checked){ setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.'); openAttraction.disabled = false; openSwitch.classList.remove('disabled'); }
+      else { setState(STATE.OFF, 'Stroom UIT. Alles uitgeschakeld.'); gates.checked = false; setBrackets(false); openAttraction.checked = false; openAttraction.disabled = true; openSwitch.classList.add('disabled'); }
+      updateSensors();
+    });
+
+    openAttraction.addEventListener('change', () => {
+      if (!power.checked && openAttraction.checked){ openAttraction.checked = false; log('Kan attractie niet openen zonder stroom.'); }
+      else { log(`Attractie ${openAttraction.checked? 'OPEN' : 'DICHT'}.`); }
+      updateSensors();
+    });
+
+    bracketsBtn.addEventListener('click', () => {
+      if (state === STATE.OFF) return;
+      if (!treinInStation){ log('Beugels niet mogelijk: trein niet in station.'); return; }
+      setBrackets(!beugelsVast);
+      log(`Beugels ${beugelsVast? 'vast' : 'los'}.`);
+      maybeArm();
+    });
+
+    gates.addEventListener('change', () => {
+      if (state === STATE.OFF) { gates.checked = false; return; }
+      if (!treinInStation){
+        gates.checked = false; // poorten blijven dicht als trein niet in station
+        log('Poorten niet mogelijk: trein niet in station.');
+        updateSensors(); updateDispatchLock();
+        return;
+      }
+      log(`Poorten ${gates.checked? 'OPEN' : 'DICHT'}.`);
+      maybeArm();
+      updateSensors(); updateDispatchLock();
+    });
+
+    // Dispatch
+    let running = false;
+    async function runCycle(){
+      if (running || state === STATE.OFF || emergencyActive) return;
+      if (!kanVertrekken()){
+        const ontbreekt=[]; if(!power.checked) ontbreekt.push('Stroom'); if(!treinInStation) ontbreekt.push('Trein in station'); if(gates.checked) ontbreekt.push('Poorten dicht'); if(!beugelsVast) ontbreekt.push('Beugels vast');
+        log('Kan niet vertrekken. Vereist: ' + ontbreekt.join(', ')); return; }
+      running = true; setState(STATE.RUNNING, 'Vertrek…');
+      await sleep(600); log('Trein verlaat station…');
+      await sleep(1200); log('Op het parcours…');
+      await sleep(1200); log('Nabij remmen…');
+      await sleep(900); log('Trein gestopt. In station.');
+      running = false; setState(STATE.RETURNED, 'Trein terug in station. Wacht op operator.'); updateSensors();
+    }
+
+    dispatchBtn.addEventListener('mousedown', () => dispatchBtn.classList.add('active'));
+    dispatchBtn.addEventListener('mouseup', () => dispatchBtn.classList.remove('active'));
+    dispatchBtn.addEventListener('mouseleave', () => dispatchBtn.classList.remove('active'));
+    dispatchBtn.addEventListener('click', () => { if (state !== STATE.OFF) runCycle(); });
+
+    // Keyboard shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      if (e.key === 'p' || e.key === 'P') power.click();
+      if ((e.key === 'o' || e.key === 'O') && !openAttraction.disabled) openAttraction.click();
+      if (e.key === 'g' || e.key === 'G') gates.click();
+      if (e.key === 'b' || e.key === 'B') bracketsBtn.click();
+      if (e.code === 'Space') { e.preventDefault(); dispatchBtn.classList.add('active'); dispatchBtn.click(); }
+    });
+    window.addEventListener('keyup', (e) => { if (e.code === 'Space') dispatchBtn.classList.remove('active'); });
+
+    // Clock + verbinding
+    const clock = document.getElementById('clock');
+    const connChip = document.getElementById('connChip');
+    setInterval(()=>{ clock.textContent = new Date().toLocaleTimeString('nl-NL', {hour12:false}); }, 500);
+    setInterval(()=>{ connChip.style.opacity = (Math.random() < .02) ? .4 : 1; }, 1500);
+
+    // --- Noodstop ---
+    function setEmergency(active){
+      emergencyActive = !!active;
+      if (emergencyActive){
+        disableControls(true);
+        setState(STATE.EMERGENCY, 'NOODSTOP geactiveerd. Paneel vergrendeld.');
+        lockOverlay.hidden = false; document.querySelector('.panel').classList.add('locked-panel');
+      } else {
+        disableControls(false);
+        lockOverlay.hidden = true; document.querySelector('.panel').classList.remove('locked-panel');
+        if (power.checked) maybeArm(); else setState(STATE.OFF);
+      }
+    }
+    function disableControls(disabled){
+      [power, openAttraction, gates].forEach(el=>{ el.disabled = disabled || (el===openAttraction && !power.checked); });
+      bracketsBtn.disabled = disabled; dispatchBtn.disabled = disabled;
+      if (disabled){ dispatchBtn.classList.add('locked'); } else { updateDispatchLock(); }
+    }
+    emTest.addEventListener('click', ()=>{ setEmergency(!emergencyActive); log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT')); });
+
+    // --- Zelftests (optioneel uitvoeren) ---
+    function assert(cond, msg){ if(!cond) throw new Error(msg); }
+    function triggerChange(el){ el.dispatchEvent(new Event('change', {bubbles:true})); }
+
+    function runSelfTests(){
+      if (emergencyActive) setEmergency(false);
+      const initialPower = power.checked, initialGates = gates.checked, initialBrackets = beugelsVast;
+      try{
+        assert(typeof updateSensors === 'function', 'updateSensors ontbreekt');
+        assert(typeof updateLeds === 'function', 'updateLeds ontbreekt');
+        assert(typeof updateDispatchLock === 'function', 'updateDispatchLock ontbreekt');
+        assert(state === STATE.OFF, 'Startstaat moet OFF/UIT zijn');
+        assert(dispatchBtn.classList.contains('locked'), 'Dispatch moet vergrendeld zijn bij start');
+        power.checked = true; triggerChange(power);
+        gates.checked = false; triggerChange(gates);
+        setBrackets(true); maybeArm();
+        assert(state === STATE.ARMED, 'Staat moet GEREED zijn na checks');
+        assert(!dispatchBtn.classList.contains('locked'), 'Dispatch moet vrijgegeven zijn');
+        // Noodstop
+        setEmergency(true); assert(state === STATE.EMERGENCY, 'State EMERGENCY'); assert(dispatchBtn.disabled, 'Dispatch disabled'); setEmergency(false);
+      }catch(err){ console.error('❌ Zelftest faalde:', err.message); }
+      finally{ power.checked = initialPower; triggerChange(power); gates.checked = initialGates; triggerChange(gates); setBrackets(initialBrackets); }
+    }
+
+    async function runAsyncTests(){
+      if (emergencyActive) setEmergency(false);
+      const ip = power.checked, ig = gates.checked, ib = beugelsVast, st = state;
+      try{
+        power.checked = true; triggerChange(power);
+        gates.checked = false; triggerChange(gates);
+        setBrackets(true); maybeArm();
+        await runCycle(); await sleep(50);
+        assert(state === STATE.RETURNED, 'Na rit RETURNED');
+        assert(gates.checked === false, 'Poorten niet auto-open');
+        assert(beugelsVast === true, 'Beugels niet auto-los');
+        // Probeer bedienen buiten station
+        state = STATE.RUNNING; updateSensors();
+        const gWas = gates.checked, bWas = beugelsVast;
+        gates.checked = true; triggerChange(gates);
+        bracketsBtn.click();
+        assert(gates.checked === gWas && beugelsVast === bWas, 'Geen bediening buiten station');
+      }catch(err){ console.error('❌ Async zelftest faalde:', err.message); }
+      finally{
+        power.checked = ip; triggerChange(power); gates.checked = ig; triggerChange(gates); setBrackets(ib); setState(st);
+      }
+    }
+
+    // Init
+    updateSensors(); updateLeds(); updateDispatchLock();
+    // runSelfTests();
+    // runAsyncTests();
+  </script>
   </body>
   </html>
 
