@@ -132,6 +132,11 @@
       const popupUrl = new URL('/atc-controls.html', window.location.origin);
       popupUrl.searchParams.set('ws', wsUrl.toString());
       if (atcMeta?.attraction_name) popupUrl.searchParams.set('attraction_name', atcMeta.attraction_name);
+      if (atcMeta?.attraction_id) popupUrl.searchParams.set('attraction_id', atcMeta.attraction_id);
+      // Prefer explicit values from ATC_SHOW; fall back to identity for playername
+      const pn = atcMeta?.playername || identityCache?.playerName || null;
+      if (pn) popupUrl.searchParams.set('playername', pn);
+      if (atcMeta?.session_id) popupUrl.searchParams.set('session_id', atcMeta.session_id);
 
       const width = 1260; const height = 640;
       const left = window.screenX + Math.max(0, window.innerWidth - width - 20);

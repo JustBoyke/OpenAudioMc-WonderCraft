@@ -5,6 +5,8 @@
 const http = require("http");
 const path = require("path");
 const express = require("express");
+const fs = require("fs");
+const fsp = require("fs/promises");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -102,6 +104,13 @@ async function validateOAToken(token) {
 }
 
 const ADMIN_STATIC_DIR = path.join(__dirname, "admin");
+const ATTRACTIONS_DIR = path.join(__dirname, "attractions");
+
+function ensureDirSync(dir) {
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+}
+
+ensureDirSync(ATTRACTIONS_DIR);
 
 // --- HTTP admin endpoints (you can protect with an admin secret) ---
 function requireAdmin(req, res, next) {
@@ -1270,6 +1279,73 @@ app.post("/admin/atc/hide", requireAdmin, (req, res) => {
   return res.status(status).json(body);
 });
 
+// Create/initialize an attraction definition on disk
+async function readAttractionFile(attractionId) {
+  if (!attractionId) return null;
+  const file = path.join(ATTRACTIONS_DIR, `${attractionId}.json`);
+  try {
+    const raw = await fsp.readFile(file, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function writeAttractionFile(attractionId, data) {
+  if (!attractionId || !data) return false;
+  const file = path.join(ATTRACTIONS_DIR, `${attractionId}.json`);
+  const pretty = JSON.stringify(data, null, 2);
+  await fsp.writeFile(file, pretty, 'utf8');
+  return true;
+}
+
+function buildDefaultAttraction(attraction_id, attraction_name, overrides = {}) {
+  const defVal = 2;
+  const states = {
+    atc_power: defVal,
+    atc_status: defVal,
+    atc_station: defVal,
+    atc_gates: defVal,
+    atc_beugels: defVal,
+    atc_emercency: defVal,
+  };
+  for (const k of Object.keys(states)) {
+    const v = overrides[k];
+    if ([0, 1, 2].includes(v)) states[k] = v;
+  }
+  return { attraction_id, attraction_name, ...states, updatedAt: Date.now() };
+}
+
+app.post("/admin/atc/createAttraction", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const attraction_id = typeof body.attraction_id === 'string' ? body.attraction_id.trim() : '';
+    const attraction_name = typeof body.attraction_name === 'string' ? body.attraction_name.trim() : '';
+    if (!attraction_id) return res.status(400).json({ ok: false, error: 'attraction_id required' });
+    if (!attraction_name) return res.status(400).json({ ok: false, error: 'attraction_name required' });
+
+    const overrides = {};
+    for (const key of ['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']) {
+      if ([0,1,2].includes(body[key])) overrides[key] = body[key];
+    }
+
+    const record = buildDefaultAttraction(attraction_id, attraction_name, overrides);
+    ensureDirSync(ATTRACTIONS_DIR);
+    await writeAttractionFile(attraction_id, record);
+
+    // Also seed in-memory state so new connections get the same snapshot
+    const mem = getOrInitAtcState(attraction_id);
+    for (const key of ['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']) {
+      mem[key] = record[key];
+    }
+    mem.updatedAt = Date.now();
+
+    return res.json({ ok: true, attraction: record });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 // Simple health
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
@@ -1412,7 +1488,7 @@ pluginWss.on("connection", (ws) => {
     // ignore send failures
   }
 
-  ws.on("message", (raw) => {
+  ws.on("message", async (raw) => {
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -1466,6 +1542,24 @@ pluginWss.on("connection", (ws) => {
         const state = getOrInitAtcState(attraction_id);
         state[name] = value;
         state.updatedAt = Date.now();
+
+        // Persist to file. Merge with existing to keep attraction_name.
+        try {
+          const existing = await readAttractionFile(attraction_id);
+          const record = {
+            attraction_id,
+            attraction_name: existing?.attraction_name || null,
+            atc_power: state.atc_power ?? existing?.atc_power ?? 2,
+            atc_status: state.atc_status ?? existing?.atc_status ?? 2,
+            atc_station: state.atc_station ?? existing?.atc_station ?? 2,
+            atc_gates: state.atc_gates ?? existing?.atc_gates ?? 2,
+            atc_beugels: state.atc_beugels ?? existing?.atc_beugels ?? 2,
+            atc_emercency: state.atc_emercency ?? existing?.atc_emercency ?? 2,
+            updatedAt: Date.now(),
+          };
+          await writeAttractionFile(attraction_id, record);
+        } catch { /* ignore file errors */ }
+
         const payload = { type: 'atc_serverUpdate', name, value, session_id, playername, attraction_id };
         const delivered = broadcastAtc(attraction_id, payload);
         result = { status: 200, body: { ok: true, delivered } };
@@ -1616,7 +1710,7 @@ wss.on("connection", async (ws, request) => {
 
   const pingIv = setInterval(() => heartbeat(ws), 5000);
 
-  ws.on("message", (data) => {
+  ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
       if (!isAtc) {
@@ -1645,8 +1739,17 @@ wss.on("connection", async (ws, request) => {
           atcMetaByWs.set(ws, { session_id: session_id || null, playername: playername || null, attraction_id, token });
           attachAtcSocket(attraction_id, ws);
 
-          // Send init snapshot including identity
+          // Load file-based state if present
+          let fileState = null;
+          try { fileState = await readAttractionFile(attraction_id); } catch { /* ignore */ }
           const state = getOrInitAtcState(attraction_id) || {};
+          if (fileState) {
+            for (const key of ['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']) {
+              if ([0,1,2].includes(fileState[key])) state[key] = fileState[key];
+            }
+          }
+
+          // Send init snapshot including identity
           const payload = {
             type: 'atc_init',
             session_id: session_id || null,
@@ -1673,13 +1776,11 @@ wss.on("connection", async (ws, request) => {
           const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
           if (!validNames.has(name)) break;
           if (![0,1,2].includes(value)) break;
-          const state = getOrInitAtcState(attractionId);
-          state[name] = value;
-          state.updatedAt = Date.now();
-
-          // Broadcast to other ATC sockets for this attraction
-          const update = { type: 'atc_serverUpdate', name, value, session_id: sessionId, playername, attraction_id: attractionId };
-          broadcastAtc(attractionId, update, { except: ws });
+          // Forward to plugin to execute; plugin will respond with ATC_SERVER_UPDATE
+          const payload = { type: 'ATC_CLIENT_UPDATE', attraction_id: attractionId, name, value, session_id: sessionId, playername };
+          for (const p of pluginClients) {
+            try { if (p.readyState === 1) p.send(JSON.stringify(payload)); } catch { /* ignore */ }
+          }
           break;
         }
       default:

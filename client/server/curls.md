@@ -275,6 +275,35 @@ curl -X POST http://localhost:8080/admin/atc/hide \
       }'
 ```
 
+## POST /admin/atc/createAttraction
+Create or overwrite an attraction definition on disk. The server persists a JSON file at `server/attractions/[attraction_id].json` and uses it to seed the web control panel state. All states default to `2` (disabled) unless overridden.
+
+Body:
+- Required: `attraction_id` (string), `attraction_name` (string)
+- Optional overrides (0=false, 1=true, 2=disabled): `atc_power`, `atc_status`, `atc_station`, `atc_gates`, `atc_beugels`, `atc_emercency`
+
+Example:
+
+```sh
+curl -X POST http://localhost:8080/admin/atc/createAttraction \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: changeme" \
+  -d '{
+        "attraction_id": "baron-1898",
+        "attraction_name": "Baron 1898",
+        "atc_power": 2,
+        "atc_status": 2,
+        "atc_station": 2,
+        "atc_gates": 2,
+        "atc_beugels": 2,
+        "atc_emercency": 2
+      }'
+```
+
+Notes:
+- Web control panels are read-only for persistence; only the plugin updates the file by sending `ATC_SERVER_UPDATE` over the plugin WebSocket. The server broadcasts `atc_serverUpdate` to connected panels after writing the file so the UI syncs instantly.
+- Web clients send `atc_update` which the server forwards to the plugin as `ATC_CLIENT_UPDATE`. The plugin decides and then publishes `ATC_SERVER_UPDATE` with the authoritative result.
+
 ## GET /healthz
 Simple health probe (no auth).
 

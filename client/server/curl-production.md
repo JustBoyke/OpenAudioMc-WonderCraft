@@ -129,3 +129,29 @@ curl https://audio.wondercraftmc.nl/api/healthz
 Send JSON payloads with the same `type` names and fields as the REST helpers: `SET_REGION`, `VIDEO_INIT`, `VIDEO_PLAY`, `VIDEO_PAUSE`, `VIDEO_SEEK`, `VIDEO_CLOSE`, `VIDEO_PLAY_INSTANT`, `VIDEO_PRELOAD`, `VIDEO_PLAYLIST_INIT`.
 
 The server responds with `PLUGIN_RESPONSE` messages including the echoed `id` (if sent), status and body.
+
+---
+
+## ATC (Attraction Controls)
+
+### POST /admin/atc/createAttraction
+Create or overwrite an attraction definition on disk. The server writes `server/attractions/[attraction_id].json` and uses it to seed the web control panel state. All states default to `2` (disabled) unless overridden.
+
+```sh
+curl -X POST https://audio.wondercraftmc.nl/api/admin/atc/createAttraction \
+  -H "Content-Type: application/json" -H "x-admin-key: changeme" \
+  -d '{
+        "attraction_id": "baron-1898",
+        "attraction_name": "Baron 1898",
+        "atc_power": 2,
+        "atc_status": 2,
+        "atc_station": 2,
+        "atc_gates": 2,
+        "atc_beugels": 2,
+        "atc_emercency": 2
+      }'
+```
+
+Notes:
+- Web panels are read-only with respect to persistence. Only the plugin updates the file by sending `ATC_SERVER_UPDATE` on the plugin WebSocket; the server then broadcasts `atc_serverUpdate` to connected panels so the UI syncs.
+- Web panels send `atc_update`; the server forwards to the plugin as `ATC_CLIENT_UPDATE`. The plugin executes and responds with `ATC_SERVER_UPDATE` containing the authoritative new value.

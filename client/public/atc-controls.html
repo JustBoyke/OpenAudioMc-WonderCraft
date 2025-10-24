@@ -252,6 +252,8 @@
     };
 
     function isDisabled(name){ return !!serverDisabled[name]; }
+    function gatesSatisfiedClosed(){ return isDisabled('atc_gates') ? true : !gates.checked; }
+    function bracketsSatisfiedLocked(){ return isDisabled('atc_beugels') ? true : beugelsVast; }
     function sendAtcUpdate(name, value){
       const ws = window.atcSocket;
       if (!ws || ws.readyState !== 1) return;
@@ -264,6 +266,28 @@
     function log(msg){ const t = new Date().toLocaleTimeString('nl-NL', {hour12:false}); readout.textContent = `[${t}] ${msg}`; }
     function setBadge(el, ok){ el.classList.toggle('ok', ok); el.classList.toggle('bad', !ok); el.style.opacity = ok ? 1 : .7; }
     function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+    // --- Cooldown guard to prevent spamming ---
+    const COOLDOWN_MS = 3000;
+    const cooldowns = new Map(); // id -> epoch ms
+    function isCooling(id){ return Date.now() < (cooldowns.get(id) || 0); }
+    function startCooldown(id, ms = COOLDOWN_MS){ cooldowns.set(id, Date.now() + ms); }
+    function guardAction(el, { revertCheckbox = false } = {}){
+      const id = el && el.id ? el.id : null;
+      if (!id) return false;
+      if (isCooling(id)){
+        log('Wacht 3 sec. voor opnieuw bedienen.');
+        if (revertCheckbox && 'checked' in el) {
+          // revert the immediate UI toggle
+          el.checked = !el.checked;
+          updateSensors();
+          updateDispatchLock();
+        }
+        return true;
+      }
+      startCooldown(id);
+      return false;
+    }
 
     function setState(newState, note){ state = newState; stateText.textContent = STATE_NL[newState] || newState; if (note) log(note); updateSensors(); updateLeds(); updateDispatchLock(); }
 
@@ -282,8 +306,8 @@
 
       setBadge(sPower, power.checked);
       setBadge(sTrain, treinInStation);
-      setBadge(sGates, !gates.checked);
-      setBadge(sBrackets, beugelsVast);
+      setBadge(sGates, gatesSatisfiedClosed());
+      setBadge(sBrackets, bracketsSatisfiedLocked());
 
       // Veiligheid: poorten/beugels alleen bedienbaar als trein in station en geen noodstop
       const blockOps = !treinInStation || state === STATE.OFF || emergencyActive;
@@ -304,30 +328,59 @@
     }
 
     // Interlocks
-    function kanVertrekken(){ return !emergencyActive && power.checked && treinInStation && !gates.checked && beugelsVast; }
+    function kanVertrekken(){
+      const okGates = gatesSatisfiedClosed();
+      const okBrackets = bracketsSatisfiedLocked();
+      return !emergencyActive && power.checked && treinInStation && okGates && okBrackets;
+    }
 
-    function updateDispatchLock(){ const allow = kanVertrekken(); dispatchBtn.classList.toggle('locked', !allow); if (!power.checked) dispatchBtn.classList.add('off'); else dispatchBtn.classList.remove('off'); }
+    function updateDispatchLock(){
+      const allow = kanVertrekken();
+      const notNeeded = isDisabled('atc_gates') || isDisabled('atc_beugels');
+      dispatchBtn.classList.toggle('locked', !allow || notNeeded);
+      dispatchBtn.disabled = notNeeded || emergencyActive || state === STATE.OFF;
+      if (!power.checked) dispatchBtn.classList.add('off'); else dispatchBtn.classList.remove('off');
+    }
 
     function setBrackets(locked){ beugelsVast = !!locked; bracketsBtn.classList.toggle('off', !locked); bracketsBtn.setAttribute('aria-pressed', String(locked)); updateSensors(); updateDispatchLock(); }
 
-    function maybeArm(){ if (power.checked && !gates.checked && beugelsVast && state !== STATE.RUNNING){ setState(STATE.ARMED, 'Alle checks OK. Gereed voor vertrek.'); } else if (power.checked && state !== STATE.RUNNING) { setState(STATE.IDLE); } }
+    function maybeArm(){
+      const okGates = gatesSatisfiedClosed();
+      const okBrackets = bracketsSatisfiedLocked();
+      if (power.checked && okGates && okBrackets && state !== STATE.RUNNING){
+        setState(STATE.ARMED, 'Alle checks OK. Gereed voor vertrek.');
+      } else if (power.checked && state !== STATE.RUNNING) {
+        setState(STATE.IDLE);
+      }
+    }
 
     // --- Events ---
     power.addEventListener('change', () => {
-      if (power.checked){ setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.'); openAttraction.disabled = isDisabled('atc_status'); if (!openAttraction.disabled) openSwitch.classList.remove('disabled'); }
-      else { setState(STATE.OFF, 'Stroom UIT. Alles uitgeschakeld.'); gates.checked = false; setBrackets(false); openAttraction.checked = false; openAttraction.disabled = true; openSwitch.classList.add('disabled'); }
+      if (guardAction(power, { revertCheckbox: true })) return;
+      if (power.checked){
+        setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.');
+      } else {
+        setState(STATE.OFF, 'Stroom UIT. Alles uitgeschakeld.');
+        gates.checked = false; // power off implies gates control inactive
+        setBrackets(false);
+      }
+      // Status (open/closed) is independent of power; do not change it here
+      openAttraction.disabled = isDisabled('atc_status');
+      openSwitch.classList.toggle('disabled', openAttraction.disabled);
       updateSensors();
       sendAtcUpdate('atc_power', power.checked ? 1 : 0);
     });
 
     openAttraction.addEventListener('change', () => {
-      if (!power.checked && openAttraction.checked){ openAttraction.checked = false; log('Kan attractie niet openen zonder stroom.'); }
-      else { log(`Attractie ${openAttraction.checked? 'OPEN' : 'DICHT'}.`); }
+      if (guardAction(openAttraction, { revertCheckbox: true })) return;
+      // Status can be open even if power is off
+      log(`Attractie ${openAttraction.checked? 'OPEN' : 'DICHT'}.`);
       updateSensors();
       sendAtcUpdate('atc_status', openAttraction.checked ? 1 : 0);
     });
 
     bracketsBtn.addEventListener('click', () => {
+      if (guardAction(bracketsBtn)) return;
       if (state === STATE.OFF) return;
       if (!treinInStation){ log('Beugels niet mogelijk: trein niet in station.'); return; }
       setBrackets(!beugelsVast);
@@ -337,6 +390,7 @@
     });
 
     gates.addEventListener('change', () => {
+      if (guardAction(gates, { revertCheckbox: true })) return;
       if (state === STATE.OFF) { gates.checked = false; return; }
       if (!treinInStation){
         gates.checked = false; // poorten blijven dicht als trein niet in station
@@ -355,7 +409,7 @@
     async function runCycle(){
       if (running || state === STATE.OFF || emergencyActive) return;
       if (!kanVertrekken()){
-        const ontbreekt=[]; if(!power.checked) ontbreekt.push('Stroom'); if(!treinInStation) ontbreekt.push('Trein in station'); if(gates.checked) ontbreekt.push('Poorten dicht'); if(!beugelsVast) ontbreekt.push('Beugels vast');
+        const ontbreekt=[]; if(!power.checked) ontbreekt.push('Stroom'); if(!treinInStation) ontbreekt.push('Trein in station'); if(!gatesSatisfiedClosed()) ontbreekt.push('Poorten dicht'); if(!bracketsSatisfiedLocked()) ontbreekt.push('Beugels vast');
         log('Kan niet vertrekken. Vereist: ' + ontbreekt.join(', ')); return; }
       running = true; setState(STATE.RUNNING, 'Vertrek…');
       await sleep(600); log('Trein verlaat station…');
@@ -368,7 +422,10 @@
     dispatchBtn.addEventListener('mousedown', () => dispatchBtn.classList.add('active'));
     dispatchBtn.addEventListener('mouseup', () => dispatchBtn.classList.remove('active'));
     dispatchBtn.addEventListener('mouseleave', () => dispatchBtn.classList.remove('active'));
-    dispatchBtn.addEventListener('click', () => { if (state !== STATE.OFF) runCycle(); });
+    dispatchBtn.addEventListener('click', () => {
+      if (guardAction(dispatchBtn)) return;
+      if (state !== STATE.OFF) runCycle();
+    });
 
     // Keyboard shortcuts
     window.addEventListener('keydown', (e) => {
@@ -401,11 +458,16 @@
       }
     }
     function disableControls(disabled){
-      [power, openAttraction, gates].forEach(el=>{ el.disabled = disabled || (el===openAttraction && !power.checked); });
+      [power, openAttraction, gates].forEach(el=>{ el.disabled = disabled; });
       bracketsBtn.disabled = disabled; dispatchBtn.disabled = disabled;
       if (disabled){ dispatchBtn.classList.add('locked'); } else { updateDispatchLock(); }
     }
-    emTest.addEventListener('click', ()=>{ setEmergency(!emergencyActive); log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT')); sendAtcUpdate('atc_emercency', emergencyActive ? 1 : 0); });
+    emTest.addEventListener('click', ()=>{
+      if (guardAction(emTest)) return;
+      setEmergency(!emergencyActive);
+      log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT'));
+      sendAtcUpdate('atc_emercency', emergencyActive ? 1 : 0);
+    });
 
     // Apply full/partial state from server
     window.applyAtcState = function(data){
@@ -429,7 +491,7 @@
 
       // Enforce disabled UI
       power.disabled = isDisabled('atc_power');
-      openAttraction.disabled = isDisabled('atc_status') || !power.checked;
+      openAttraction.disabled = isDisabled('atc_status');
       openSwitch.classList.toggle('disabled', openAttraction.disabled);
       gates.disabled = isDisabled('atc_gates');
       bracketsBtn.disabled = isDisabled('atc_beugels');
@@ -466,7 +528,7 @@
           break;
       }
       power.disabled = isDisabled('atc_power');
-      openAttraction.disabled = isDisabled('atc_status') || !power.checked;
+      openAttraction.disabled = isDisabled('atc_status');
       openSwitch.classList.toggle('disabled', openAttraction.disabled);
       gates.disabled = isDisabled('atc_gates');
       bracketsBtn.disabled = isDisabled('atc_beugels');
