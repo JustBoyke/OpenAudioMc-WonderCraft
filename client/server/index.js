@@ -27,6 +27,60 @@ app.use(express.json());
 // In-memory stores (replace with Redis if you want multiple instances)
 const clientsByToken = new Map(); // token -> { ws, playerId, lastSeen }
 const atcSocketsByToken = new Map(); // token -> Set<ws> (secondary popup connections)
+// ATC state and connection tracking
+const atcStateByAttraction = new Map(); // attraction_id -> state snapshot
+const atcSocketsByAttraction = new Map(); // attraction_id -> Set<ws>
+const atcMetaByWs = new WeakMap(); // ws -> { attraction_id, session_id, playername, token }
+
+function getOrInitAtcState(attractionId) {
+  if (!attractionId) return null;
+  let s = atcStateByAttraction.get(attractionId);
+  if (!s) {
+    s = {
+      atc_power: 0,
+      atc_status: 0,
+      atc_station: 0,
+      atc_gates: 0,
+      atc_beugels: 0,
+      atc_emercency: 0, // spelling aligned with client
+      updatedAt: Date.now(),
+    };
+    atcStateByAttraction.set(attractionId, s);
+  }
+  return s;
+}
+
+function attachAtcSocket(attractionId, ws) {
+  if (!attractionId || !ws) return;
+  let set = atcSocketsByAttraction.get(attractionId);
+  if (!set) { set = new Set(); atcSocketsByAttraction.set(attractionId, set); }
+  set.add(ws);
+}
+
+function detachAtcSocket(ws) {
+  if (!ws) return;
+  const meta = atcMetaByWs.get(ws);
+  if (meta && meta.attraction_id) {
+    const set = atcSocketsByAttraction.get(meta.attraction_id);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) atcSocketsByAttraction.delete(meta.attraction_id);
+    }
+  }
+  atcMetaByWs.delete(ws);
+}
+
+function broadcastAtc(attractionId, payload, { except } = {}) {
+  const set = atcSocketsByAttraction.get(attractionId);
+  if (!set || !payload) return 0;
+  let count = 0;
+  for (const sock of Array.from(set)) {
+    if (except && sock === except) continue;
+    if (sock.readyState !== 1) continue;
+    try { sock.send(JSON.stringify(payload)); count += 1; } catch { /* ignore */ }
+  }
+  return count;
+}
 const tokenToPlayerId = new Map(); // optional helper if you map tokens => playerId
 const activeMediaByToken = new Map(); // token -> media state snapshot
 const activeMediaByRegion = new Map(); // regionId -> media state snapshot
@@ -1395,6 +1449,28 @@ pluginWss.on("connection", (ws) => {
       case "SET_REGION":
         result = handleSetRegionRequest(msg);
         break;
+      case "ATC_SERVER_UPDATE": {
+        const {
+          attraction_id,
+          name,
+          value,
+          session_id = null,
+          playername = null,
+        } = msg || {};
+        const valid = typeof attraction_id === 'string' && typeof name === 'string' && [0,1,2].includes(value);
+        const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
+        if (!valid || !validNames.has(name)) {
+          result = buildError(400, "invalid_atc_update");
+          break;
+        }
+        const state = getOrInitAtcState(attraction_id);
+        state[name] = value;
+        state.updatedAt = Date.now();
+        const payload = { type: 'atc_serverUpdate', name, value, session_id, playername, attraction_id };
+        const delivered = broadcastAtc(attraction_id, payload);
+        result = { status: 200, body: { ok: true, delivered } };
+        break;
+      }
       case "VIDEO_INIT":
         result = handleVideoInitRequest(msg);
         break;
@@ -1561,6 +1637,51 @@ wss.on("connection", async (ws, request) => {
         case "IDENTITY_UPDATE":
           if (!isAtc) updateClientIdentity(token, msg);
           break;
+        case "atc_firstConnection": {
+          if (!isAtc) break; // ignore if not an ATC connection
+          const { session_id, playername, attraction_id } = msg || {};
+          if (!attraction_id) break;
+          // Remember meta and index by attraction
+          atcMetaByWs.set(ws, { session_id: session_id || null, playername: playername || null, attraction_id, token });
+          attachAtcSocket(attraction_id, ws);
+
+          // Send init snapshot including identity
+          const state = getOrInitAtcState(attraction_id) || {};
+          const payload = {
+            type: 'atc_init',
+            session_id: session_id || null,
+            playername: playername || null,
+            attraction_id,
+            atc_power: state.atc_power ?? 0,
+            atc_status: state.atc_status ?? 0,
+            atc_station: state.atc_station ?? 0,
+            atc_gates: state.atc_gates ?? 0,
+            atc_beugels: state.atc_beugels ?? 0,
+            atc_emercency: state.atc_emercency ?? 0,
+          };
+          try { ws.send(JSON.stringify(payload)); } catch { /* ignore */ }
+          break;
+        }
+        case "atc_update": {
+          if (!isAtc) break; // only from ATC client
+          const meta = atcMetaByWs.get(ws) || {};
+          const attractionId = msg.attraction_id || meta.attraction_id;
+          const sessionId = msg.session_id || meta.session_id || null;
+          const playername = msg.playername || meta.playername || null;
+          const { name, value } = msg || {};
+          if (!attractionId || typeof name !== 'string') break;
+          const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
+          if (!validNames.has(name)) break;
+          if (![0,1,2].includes(value)) break;
+          const state = getOrInitAtcState(attractionId);
+          state[name] = value;
+          state.updatedAt = Date.now();
+
+          // Broadcast to other ATC sockets for this attraction
+          const update = { type: 'atc_serverUpdate', name, value, session_id: sessionId, playername, attraction_id: attractionId };
+          broadcastAtc(attractionId, update, { except: ws });
+          break;
+        }
       default:
           break;
       }
@@ -1575,6 +1696,8 @@ wss.on("connection", async (ws, request) => {
         set.delete(ws);
         if (set.size === 0) atcSocketsByToken.delete(token);
       }
+      // Also clean up ATC attraction mapping
+      try { detachAtcSocket(ws); } catch { /* ignore */ }
     } else {
       // Cleanup primary
       assignRegionForToken(token, null, { alreadyCanonical: true });

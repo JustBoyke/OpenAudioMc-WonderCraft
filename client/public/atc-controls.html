@@ -151,15 +151,22 @@
     <div class="note" style="margin-top:18px">Dit is een front-end simulatie. Koppel deze bediening later aan je websocket/REST events.</div>
   </div>
     <script>
+      // ATC socket bridge: exposes window.atcSocket and window.atcIdentity
       (function() {
         const params = new URLSearchParams(location.search);
         const wsParam = params.get('ws') || '';
         const attractionName = params.get('attraction_name') || '';
+        const session_id = params.get('session_id') || '';
+        const playername = params.get('playername') || '';
+        const attraction_id = params.get('attraction_id') || '';
+
         if (attractionName) {
           document.title = `Attractie Controls voor ${attractionName}`;
         }
 
         document.getElementById('meta').textContent = attractionName ? `Attractie: ${attractionName}` : '';
+
+        window.atcIdentity = { session_id, playername, attraction_id };
 
         if (!wsParam) {
           document.getElementById('status').textContent = 'Geen WS URL gevonden';
@@ -168,10 +175,32 @@
 
         try {
           const ws = new WebSocket(wsParam);
-          ws.onopen = function() { document.getElementById('status').textContent = 'Verbonden'; };
+          window.atcSocket = ws;
+
+          ws.onopen = function() {
+            document.getElementById('status').textContent = 'Verbonden';
+            // Announce first connection
+            try { ws.send(JSON.stringify({ type: 'atc_firstConnection', ...window.atcIdentity })); } catch(e) {}
+          };
           ws.onclose = function() { document.getElementById('status').textContent = 'Verbinding verbroken'; };
           ws.onerror = function() { document.getElementById('status').textContent = 'Verbindingsfout'; };
-          // Empty UI for now; hook up later
+          ws.onmessage = function(ev){
+            try {
+              const data = JSON.parse(ev.data);
+              if (!data) return;
+              if (data.type === 'atc_init') {
+                if (window.applyAtcState) window.applyAtcState(data);
+              } else if (data.type === 'atc_serverUpdate') {
+                if (data.name && typeof window.applySingleAtcUpdate === 'function') {
+                  window.applySingleAtcUpdate(data.name, data.value);
+                } else if (typeof window.applyAtcState === 'function') {
+                  window.applyAtcState(data);
+                }
+              }
+            } catch (e) {
+              // ignore non-JSON
+            }
+          };
         } catch (e) {
           document.getElementById('status').textContent = 'Kon geen verbinding maken';
         }
@@ -208,8 +237,28 @@
 
     let state = STATE.OFF;
     let treinInStation = false; // sensor
+    let stationOverride = null; // server may provide atc_station
     let beugelsVast = false;
     let emergencyActive = false;
+
+    // Server-driven disables (2 = disabled)
+    const serverDisabled = {
+      atc_power: false,
+      atc_status: false,
+      atc_station: false,
+      atc_gates: false,
+      atc_beugels: false,
+      atc_emercency: false
+    };
+
+    function isDisabled(name){ return !!serverDisabled[name]; }
+    function sendAtcUpdate(name, value){
+      const ws = window.atcSocket;
+      if (!ws || ws.readyState !== 1) return;
+      const payload = { type: 'atc_update', name, ...window.atcIdentity };
+      if (typeof value !== 'undefined') payload.value = value;
+      try { ws.send(JSON.stringify(payload)); } catch(e) {}
+    }
 
     // --- Utilities ---
     function log(msg){ const t = new Date().toLocaleTimeString('nl-NL', {hour12:false}); readout.textContent = `[${t}] ${msg}`; }
@@ -224,8 +273,12 @@
       powerLed.className = 'mini-led ' + (power.checked ? 'on' : 'off');
       openLed.className = 'mini-led ' + (openAttraction.checked ? 'on' : 'off');
 
-      // Trein in station indien systeem niet rijdt maar wel stroom heeft
-      treinInStation = power.checked && state !== STATE.RUNNING;
+      // Trein in station: server override or derived
+      if (stationOverride === null) {
+        treinInStation = power.checked && state !== STATE.RUNNING;
+      } else {
+        treinInStation = !!stationOverride;
+      }
 
       setBadge(sPower, power.checked);
       setBadge(sTrain, treinInStation);
@@ -234,8 +287,8 @@
 
       // Veiligheid: poorten/beugels alleen bedienbaar als trein in station en geen noodstop
       const blockOps = !treinInStation || state === STATE.OFF || emergencyActive;
-      gates.disabled = blockOps;
-      bracketsBtn.disabled = blockOps;
+      gates.disabled = blockOps || isDisabled('atc_gates');
+      bracketsBtn.disabled = blockOps || isDisabled('atc_beugels');
     }
 
     function updateLeds(){
@@ -261,15 +314,17 @@
 
     // --- Events ---
     power.addEventListener('change', () => {
-      if (power.checked){ setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.'); openAttraction.disabled = false; openSwitch.classList.remove('disabled'); }
+      if (power.checked){ setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.'); openAttraction.disabled = isDisabled('atc_status'); if (!openAttraction.disabled) openSwitch.classList.remove('disabled'); }
       else { setState(STATE.OFF, 'Stroom UIT. Alles uitgeschakeld.'); gates.checked = false; setBrackets(false); openAttraction.checked = false; openAttraction.disabled = true; openSwitch.classList.add('disabled'); }
       updateSensors();
+      sendAtcUpdate('atc_power', power.checked ? 1 : 0);
     });
 
     openAttraction.addEventListener('change', () => {
       if (!power.checked && openAttraction.checked){ openAttraction.checked = false; log('Kan attractie niet openen zonder stroom.'); }
       else { log(`Attractie ${openAttraction.checked? 'OPEN' : 'DICHT'}.`); }
       updateSensors();
+      sendAtcUpdate('atc_status', openAttraction.checked ? 1 : 0);
     });
 
     bracketsBtn.addEventListener('click', () => {
@@ -278,6 +333,7 @@
       setBrackets(!beugelsVast);
       log(`Beugels ${beugelsVast? 'vast' : 'los'}.`);
       maybeArm();
+      sendAtcUpdate('atc_beugels', beugelsVast ? 1 : 0);
     });
 
     gates.addEventListener('change', () => {
@@ -291,6 +347,7 @@
       log(`Poorten ${gates.checked? 'OPEN' : 'DICHT'}.`);
       maybeArm();
       updateSensors(); updateDispatchLock();
+      sendAtcUpdate('atc_gates', gates.checked ? 1 : 0);
     });
 
     // Dispatch
@@ -348,7 +405,74 @@
       bracketsBtn.disabled = disabled; dispatchBtn.disabled = disabled;
       if (disabled){ dispatchBtn.classList.add('locked'); } else { updateDispatchLock(); }
     }
-    emTest.addEventListener('click', ()=>{ setEmergency(!emergencyActive); log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT')); });
+    emTest.addEventListener('click', ()=>{ setEmergency(!emergencyActive); log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT')); sendAtcUpdate('atc_emercency', emergencyActive ? 1 : 0); });
+
+    // Apply full/partial state from server
+    window.applyAtcState = function(data){
+      // Disabled flags: 2 means disabled
+      if ('atc_power' in data) serverDisabled.atc_power = (data.atc_power === 2);
+      if ('atc_status' in data) serverDisabled.atc_status = (data.atc_status === 2);
+      if ('atc_station' in data) serverDisabled.atc_station = (data.atc_station === 2);
+      if ('atc_gates' in data) serverDisabled.atc_gates = (data.atc_gates === 2);
+      if ('atc_beugels' in data) serverDisabled.atc_beugels = (data.atc_beugels === 2);
+      if ('atc_emercency' in data) serverDisabled.atc_emercency = (data.atc_emercency === 2);
+
+      // Apply values (0/1) where provided
+      if (typeof data.atc_power === 'number' && data.atc_power !== 2) power.checked = data.atc_power === 1;
+      if (typeof data.atc_status === 'number' && data.atc_status !== 2) openAttraction.checked = data.atc_status === 1;
+      if (typeof data.atc_station === 'number') {
+        if (data.atc_station === 2) stationOverride = null; else stationOverride = data.atc_station === 1;
+      }
+      if (typeof data.atc_gates === 'number' && data.atc_gates !== 2) gates.checked = data.atc_gates === 1;
+      if (typeof data.atc_beugels === 'number' && data.atc_beugels !== 2) setBrackets(data.atc_beugels === 1);
+      if (typeof data.atc_emercency === 'number' && data.atc_emercency !== 2) setEmergency(data.atc_emercency === 1);
+
+      // Enforce disabled UI
+      power.disabled = isDisabled('atc_power');
+      openAttraction.disabled = isDisabled('atc_status') || !power.checked;
+      openSwitch.classList.toggle('disabled', openAttraction.disabled);
+      gates.disabled = isDisabled('atc_gates');
+      bracketsBtn.disabled = isDisabled('atc_beugels');
+
+      updateSensors();
+      updateDispatchLock();
+    };
+
+    window.applySingleAtcUpdate = function(name, value){
+      switch(name){
+        case 'atc_power':
+          serverDisabled.atc_power = (value === 2);
+          if (value !== 2) power.checked = value === 1;
+          break;
+        case 'atc_status':
+          serverDisabled.atc_status = (value === 2);
+          if (value !== 2) openAttraction.checked = value === 1;
+          break;
+        case 'atc_station':
+          serverDisabled.atc_station = (value === 2);
+          stationOverride = (value === 2) ? null : (value === 1);
+          break;
+        case 'atc_gates':
+          serverDisabled.atc_gates = (value === 2);
+          if (value !== 2) gates.checked = value === 1;
+          break;
+        case 'atc_beugels':
+          serverDisabled.atc_beugels = (value === 2);
+          if (value !== 2) setBrackets(value === 1);
+          break;
+        case 'atc_emercency':
+          serverDisabled.atc_emercency = (value === 2);
+          if (value !== 2) setEmergency(value === 1);
+          break;
+      }
+      power.disabled = isDisabled('atc_power');
+      openAttraction.disabled = isDisabled('atc_status') || !power.checked;
+      openSwitch.classList.toggle('disabled', openAttraction.disabled);
+      gates.disabled = isDisabled('atc_gates');
+      bracketsBtn.disabled = isDisabled('atc_beugels');
+      updateSensors();
+      updateDispatchLock();
+    };
 
     // --- Zelftests (optioneel uitvoeren) ---
     function assert(cond, msg){ if(!cond) throw new Error(msg); }
@@ -404,4 +528,3 @@
   </script>
   </body>
   </html>
-
