@@ -196,6 +196,8 @@
                 } else if (typeof window.applyAtcState === 'function') {
                   window.applyAtcState(data);
                 }
+              } else if (data.type === 'atc_sessionInvalid' || data.type === 'atc_sessionClosed') {
+                if (typeof window.handleAtcSessionEvent === 'function') window.handleAtcSessionEvent(data);
               }
             } catch (e) {
               // ignore non-JSON
@@ -468,6 +470,17 @@
       log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT'));
       sendAtcUpdate('atc_emercency', emergencyActive ? 1 : 0);
     });
+
+    // Session invalidation/closure handling
+    window.handleAtcSessionEvent = function(evt){
+      try {
+        disableControls(true);
+        lockOverlay.hidden = false;
+        document.querySelector('.panel')?.classList.add('locked-panel');
+        document.getElementById('status').textContent = evt.type === 'atc_sessionClosed' ? 'Sessie beëindigd' : 'Sessie ongeldig';
+        log('ATC sessie niet meer geldig. Sluit dit venster.');
+      } catch {}
+    };
 
     // Apply full/partial state from server
     window.applyAtcState = function(data){

@@ -33,6 +33,34 @@ const atcSocketsByToken = new Map(); // token -> Set<ws> (secondary popup connec
 const atcStateByAttraction = new Map(); // attraction_id -> state snapshot
 const atcSocketsByAttraction = new Map(); // attraction_id -> Set<ws>
 const atcMetaByWs = new WeakMap(); // ws -> { attraction_id, session_id, playername, token }
+const atcSessions = new Map(); // session_id -> { attraction_id, createdAt, closedAt?: number }
+
+function genSessionId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function createAtcSession(attraction_id, session_id = null) {
+  if (!attraction_id) return null;
+  const id = session_id || genSessionId();
+  atcSessions.set(id, { attraction_id, createdAt: Date.now(), closedAt: null });
+  return id;
+}
+
+function closeAtcSession(session_id) {
+  const s = session_id ? atcSessions.get(session_id) : null;
+  if (!s) return false;
+  if (!s.closedAt) s.closedAt = Date.now();
+  atcSessions.set(session_id, s);
+  return true;
+}
+
+function isSessionActive(session_id, attraction_id) {
+  if (!session_id) return false;
+  const s = atcSessions.get(session_id);
+  if (!s) return false;
+  if (attraction_id && s.attraction_id && s.attraction_id !== attraction_id) return false;
+  return !s.closedAt;
+}
 
 function getOrInitAtcState(attractionId) {
   if (!attractionId) return null;
@@ -78,6 +106,19 @@ function broadcastAtc(attractionId, payload, { except } = {}) {
   let count = 0;
   for (const sock of Array.from(set)) {
     if (except && sock === except) continue;
+    if (sock.readyState !== 1) continue;
+    try { sock.send(JSON.stringify(payload)); count += 1; } catch { /* ignore */ }
+  }
+  return count;
+}
+
+function broadcastAtcSessionEvent(attractionId, session_id, payload) {
+  const set = atcSocketsByAttraction.get(attractionId);
+  if (!set || !payload) return 0;
+  let count = 0;
+  for (const sock of Array.from(set)) {
+    const meta = atcMetaByWs.get(sock);
+    if (!meta || meta.session_id !== session_id) continue;
     if (sock.readyState !== 1) continue;
     try { sock.send(JSON.stringify(payload)); count += 1; } catch { /* ignore */ }
   }
@@ -1246,17 +1287,24 @@ function handleAtcShowRequest(body = {}) {
     return buildError(400, "attraction_name required");
   }
 
+  // Session handling: ensure a session exists for this show request
+  const attraction_id = body.attraction_id ?? null;
+  let session_id = typeof body.session_id === 'string' && body.session_id.trim() ? body.session_id.trim() : null;
+  if (attraction_id) {
+    session_id = createAtcSession(attraction_id, session_id);
+  }
+
   const payload = {
     type: "ATC_SHOW",
     attraction_name: attractionName,
-    attraction_id: body.attraction_id ?? null,
+    attraction_id,
     playername: body.playername ?? null,
     player_uuid: body.player_uuid ?? null,
-    session_id: body.session_id ?? null,
+    session_id: session_id ?? null,
   };
 
   const { response } = deliverPayloadToTarget(target, payload);
-  return { status: 200, body: response };
+  return { status: 200, body: { ...response, session_id: session_id ?? null } };
 }
 
 app.post("/admin/atc/show", requireAdmin, (req, res) => {
@@ -1269,8 +1317,17 @@ function handleAtcHideRequest(body = {}) {
   if (!target) {
     return buildError(400, "token, playerId, playerUuid, playerName, or regionId required");
   }
-  const payload = { type: "ATC_HIDE" };
+  const session_id = typeof body.session_id === 'string' && body.session_id.trim() ? body.session_id.trim() : null;
+  const attraction_id = typeof body.attraction_id === 'string' ? body.attraction_id : null;
+  if (session_id) closeAtcSession(session_id);
+
+  const payload = { type: "ATC_HIDE", session_id: session_id ?? null, attraction_id: attraction_id ?? null };
   const { response } = deliverPayloadToTarget(target, payload);
+
+  // Also notify any active ATC sockets tied to this session
+  if (session_id && attraction_id) {
+    try { broadcastAtcSessionEvent(attraction_id, session_id, { type: 'atc_sessionClosed', session_id, reason: 'hidden' }); } catch { /* ignore */ }
+  }
   return { status: 200, body: response };
 }
 
@@ -1735,6 +1792,11 @@ wss.on("connection", async (ws, request) => {
           if (!isAtc) break; // ignore if not an ATC connection
           const { session_id, playername, attraction_id } = msg || {};
           if (!attraction_id) break;
+          // Validate session
+          if (!isSessionActive(session_id, attraction_id)) {
+            try { ws.send(JSON.stringify({ type: 'atc_sessionInvalid', session_id: session_id || null, attraction_id })); } catch { /* ignore */ }
+            break;
+          }
           // Remember meta and index by attraction
           atcMetaByWs.set(ws, { session_id: session_id || null, playername: playername || null, attraction_id, token });
           attachAtcSocket(attraction_id, ws);
@@ -1771,6 +1833,11 @@ wss.on("connection", async (ws, request) => {
           const attractionId = msg.attraction_id || meta.attraction_id;
           const sessionId = msg.session_id || meta.session_id || null;
           const playername = msg.playername || meta.playername || null;
+          if (!isSessionActive(sessionId, attractionId)) {
+            // Session expired while panel was open
+            try { ws.send(JSON.stringify({ type: 'atc_sessionInvalid', session_id: sessionId || null, attraction_id: attractionId })); } catch { /* ignore */ }
+            break;
+          }
           const { name, value } = msg || {};
           if (!attractionId || typeof name !== 'string') break;
           const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
