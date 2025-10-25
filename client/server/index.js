@@ -1336,6 +1336,70 @@ app.post("/admin/atc/hide", requireAdmin, (req, res) => {
   return res.status(status).json(body);
 });
 
+// List attractions from disk
+app.get("/admin/atc/attractions", requireAdmin, async (_req, res) => {
+  try {
+    ensureDirSync(ATTRACTIONS_DIR);
+    const entries = await fsp.readdir(ATTRACTIONS_DIR, { withFileTypes: true });
+    const items = [];
+    for (const ent of entries) {
+      if (!ent.isFile() || !ent.name.endsWith('.json')) continue;
+      const id = ent.name.replace(/\.json$/i, '');
+      try {
+        const data = await readAttractionFile(id);
+        items.push({ attraction_id: id, attraction_name: data?.attraction_name || id, state: data || null });
+      } catch {
+        items.push({ attraction_id: id, attraction_name: id, state: null });
+      }
+    }
+    items.sort((a, b) => a.attraction_name.localeCompare(b.attraction_name));
+    return res.json({ ok: true, attractions: items });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'read_failed' });
+  }
+});
+
+// Create an admin-controlled ATC session with ADMIN_ prefix
+app.post("/admin/atc/admin-session", requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const attraction_id = typeof body.attraction_id === 'string' ? body.attraction_id.trim() : '';
+  const adminPass = typeof body.adminPass === 'string' ? body.adminPass : '';
+  const fallback = 'WONDER@tc2025Admin';
+  const expected = process.env.ATC_ADMIN_PASS || fallback;
+  if (!attraction_id) return res.status(400).json({ ok: false, error: 'attraction_id required' });
+  if (!adminPass || adminPass !== expected) return res.status(401).json({ ok: false, error: 'invalid_admin_pass' });
+  const session_id = `ADMIN_${Math.random().toString(36).slice(2, 10)}`;
+  createAtcSession(attraction_id, session_id);
+  return res.json({ ok: true, session_id });
+});
+
+// List ATC sessions
+app.get("/admin/atc/sessions", requireAdmin, (_req, res) => {
+  const sessions = Array.from(atcSessions.entries()).map(([id, s]) => ({
+    session_id: id,
+    attraction_id: s.attraction_id,
+    createdAt: s.createdAt,
+    closedAt: s.closedAt || null,
+    active: !s.closedAt,
+  }));
+  sessions.sort((a, b) => (b.createdAt - a.createdAt));
+  return res.json({ ok: true, sessions });
+});
+
+// Close a specific ATC session
+app.post("/admin/atc/close-session", requireAdmin, (req, res) => {
+  const session_id = typeof req.body?.session_id === 'string' ? req.body.session_id.trim() : '';
+  if (!session_id) return res.status(400).json({ ok: false, error: 'session_id required' });
+  const s = atcSessions.get(session_id);
+  if (!s) return res.status(404).json({ ok: false, error: 'not_found' });
+  const wasActive = isSessionActive(session_id, s.attraction_id);
+  closeAtcSession(session_id);
+  if (wasActive) {
+    try { broadcastAtcSessionEvent(s.attraction_id, session_id, { type: 'atc_sessionClosed', session_id, reason: 'admin_terminated' }); } catch {}
+  }
+  return res.json({ ok: true });
+});
+
 // Create/initialize an attraction definition on disk
 async function readAttractionFile(attractionId) {
   if (!attractionId) return null;
@@ -1847,6 +1911,22 @@ wss.on("connection", async (ws, request) => {
           const payload = { type: 'ATC_CLIENT_UPDATE', attraction_id: attractionId, name, value, session_id: sessionId, playername };
           for (const p of pluginClients) {
             try { if (p.readyState === 1) p.send(JSON.stringify(payload)); } catch { /* ignore */ }
+          }
+          break;
+        }
+        case "atc_closeSession": {
+          if (!isAtc) break;
+          const meta = atcMetaByWs.get(ws) || {};
+          const attractionId = msg.attraction_id || meta.attraction_id;
+          const sessionId = msg.session_id || meta.session_id || null;
+          if (!attractionId || !sessionId) break;
+          // Only allow closing ADMIN_ sessions via this path
+          if (typeof sessionId === 'string' && sessionId.startsWith('ADMIN_')) {
+            const wasActive = isSessionActive(sessionId, attractionId);
+            closeAtcSession(sessionId);
+            if (wasActive) {
+              try { broadcastAtcSessionEvent(attractionId, sessionId, { type: 'atc_sessionClosed', session_id: sessionId, reason: 'window_closed' }); } catch {}
+            }
           }
           break;
         }

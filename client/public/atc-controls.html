@@ -147,8 +147,7 @@
       </section>
     </main>
 
-    <div id="emTest" class="emerg-toggle" title="Toggle noodstop (test)">toggle emergency</div>
-    <div class="note" style="margin-top:18px">Dit is een front-end simulatie. Koppel deze bediening later aan je websocket/REST events.</div>
+    <div class="note" style="margin-top:18px">Dit paneel is eigendom van WonderCraftMC. Made with <3 by <a href="https://boyke.dev">Boyke</a></div>
   </div>
     <script>
       // ATC socket bridge: exposes window.atcSocket and window.atcIdentity
@@ -481,6 +480,18 @@
         log('ATC sessie niet meer geldig. Sluit dit venster.');
       } catch {}
     };
+
+    // Close admin sessions when window is closed
+    window.addEventListener('beforeunload', () => {
+      try {
+        const ws = window.atcSocket;
+        const id = (window.atcIdentity && window.atcIdentity.session_id) || '';
+        const attractionId = (window.atcIdentity && window.atcIdentity.attraction_id) || '';
+        if (ws && ws.readyState === 1 && typeof id === 'string' && id.startsWith('ADMIN_') && attractionId) {
+          ws.send(JSON.stringify({ type: 'atc_closeSession', session_id: id, attraction_id: attractionId }));
+        }
+      } catch {}
+    });
 
     // Apply full/partial state from server
     window.applyAtcState = function(data){

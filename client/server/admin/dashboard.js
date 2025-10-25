@@ -30,9 +30,13 @@
   const regionCountEl = document.getElementById('regionCount');
   const connectionsBody = document.getElementById('connectionsBody');
   const regionsBody = document.getElementById('regionsBody');
+  const attractionsSection = document.getElementById('attractionsSection');
+  const attractionsBody = document.getElementById('attractionsBody');
   const tabButtons = Array.from(document.querySelectorAll('.tab-button'));
   const connectionsSection = document.getElementById('connectionsSection');
   const regionsSection = document.getElementById('regionsSection');
+  const atcSessionsSection = document.getElementById('atcSessionsSection');
+  const atcSessionsBody = document.getElementById('atcSessionsBody');
   const modal = document.getElementById('authModal');
   const modalAdminKey = document.getElementById('modalAdminKey');
   const modalApply = document.getElementById('modalApply');
@@ -66,6 +70,14 @@
     }
     if (regionsSection) {
       regionsSection.classList.toggle('hidden', tab !== 'regions');
+    }
+    if (attractionsSection) {
+      attractionsSection.classList.toggle('hidden', tab !== 'attractions');
+      if (tab === 'attractions') fetchAttractions();
+    }
+    if (atcSessionsSection) {
+      atcSessionsSection.classList.toggle('hidden', tab !== 'atc_sessions');
+      if (tab === 'atc_sessions') fetchAtcSessions();
     }
   }
 
@@ -251,6 +263,273 @@
         } catch { /* ignore */ }
       }
     });
+  }
+
+  // --- Attractions ---
+  async function fetchAttractions() {
+    if (!state.adminKey || !attractionsBody) return;
+    const snapshot = captureInputState(attractionsBody, 'id');
+    try {
+      const resp = await fetch(`${basePath}/admin/atc/attractions`, { headers: { 'x-admin-key': state.adminKey } });
+      if (!resp.ok) throw new Error('failed');
+      const data = await resp.json();
+      const items = Array.isArray(data.attractions) ? data.attractions : [];
+      renderAttractions(items);
+      restoreInputState(attractionsBody, 'id', snapshot);
+    } catch {
+      attractionsBody.innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load attractions.</td></tr>';
+    }
+  }
+
+  function renderAttractions(items) {
+    if (!attractionsBody) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      attractionsBody.innerHTML = '<tr><td colspan="8" class="empty-state">No attractions found.</td></tr>';
+      return;
+    }
+    const rows = items.map((a) => {
+      const s = a.state || {};
+      const val = (v) => (v === 2 ? '—' : (v === 1 ? 'ON' : 'OFF'));
+      return `
+        <tr data-id="${a.attraction_id}">
+          <td class="token">${a.attraction_id}</td>
+          <td>${a.attraction_name || ''}</td>
+          <td>${val(s.atc_power)}</td>
+          <td>${val(s.atc_status)}</td>
+          <td>${val(s.atc_gates)}</td>
+          <td>${val(s.atc_beugels)}</td>
+          <td>${val(s.atc_emercency)}</td>
+          <td class="actions">
+            <button type="button" class="primary" data-action="open-atc" data-id="${a.attraction_id}" data-name="${a.attraction_name || ''}">Open Controls</button>
+          </td>
+        </tr>`;
+    }).join('');
+    attractionsBody.innerHTML = rows;
+    Array.from(attractionsBody.querySelectorAll('button[data-action="open-atc"]')).forEach((btn) => {
+      btn.addEventListener('click', () => handleOpenAtc(btn.dataset.id, btn.dataset.name));
+    });
+  }
+
+  function computeWsUrl() {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${window.location.host}${basePath}/ws/video`;
+  }
+
+  async function ensureAtcAdminPass() {
+    let pass = sessionStorage.getItem('atcAdminPass') || '';
+    if (!pass) {
+      pass = window.prompt('Enter ATC admin password');
+      if (!pass) throw new Error('cancelled');
+    }
+    return pass;
+  }
+
+  async function handleOpenAtc(attraction_id, attraction_name) {
+    try {
+      const adminPass = await ensureAtcAdminPass();
+      const resp = await fetch(`${basePath}/admin/atc/admin-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': state.adminKey },
+        body: JSON.stringify({ attraction_id, adminPass }),
+      });
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          sessionStorage.removeItem('atcAdminPass');
+          alert('Invalid ATC admin password');
+          return;
+        }
+        throw new Error('failed');
+      }
+      const data = await resp.json();
+      if (!data.ok || !data.session_id) throw new Error('no session');
+      sessionStorage.setItem('atcAdminPass', adminPass);
+
+      const wsUrl = new URL(computeWsUrl());
+      const token = `ADMIN_${Math.random().toString(36).slice(2, 8)}`;
+      wsUrl.searchParams.set('token', token);
+      wsUrl.searchParams.set('role', 'atc');
+      wsUrl.searchParams.set('playerName', 'Admin');
+
+      const popupUrl = new URL('/atc-controls.html', window.location.origin);
+      popupUrl.searchParams.set('ws', wsUrl.toString());
+      popupUrl.searchParams.set('attraction_name', attraction_name || attraction_id);
+      popupUrl.searchParams.set('attraction_id', attraction_id);
+      popupUrl.searchParams.set('playername', 'Admin');
+      popupUrl.searchParams.set('session_id', data.session_id);
+
+      const width = 1260; const height = 640;
+      const left = window.screenX + Math.max(0, window.innerWidth - width - 20);
+      const top = window.screenY + Math.max(0, window.innerHeight - height - 60);
+      window.open(
+        popupUrl.toString(),
+        `attraction-controls-${attraction_id}`,
+        `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=no`,
+      );
+    } catch (e) {
+      if (e && e.message === 'cancelled') return;
+      alert('Failed to open attraction controls.');
+    }
+  }
+
+  // --- ATC Sessions ---
+  async function fetchAtcSessions() {
+    if (!state.adminKey || !atcSessionsBody) return;
+    try {
+      const resp = await fetch(`${basePath}/admin/atc/sessions`, { headers: { 'x-admin-key': state.adminKey } });
+      if (!resp.ok) throw new Error('failed');
+      const data = await resp.json();
+      const items = Array.isArray(data.sessions) ? data.sessions : [];
+      renderAtcSessions(items);
+    } catch {
+      atcSessionsBody.innerHTML = '<tr><td colspan="5" class="empty-state">Failed to load sessions.</td></tr>';
+    }
+  }
+
+  function renderAtcSessions(items) {
+    if (!atcSessionsBody) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      atcSessionsBody.innerHTML = '<tr><td colspan="5" class="empty-state">No sessions.</td></tr>';
+      return;
+    }
+    const rows = items.map((s) => {
+      const created = new Date(s.createdAt).toLocaleString();
+      const status = s.active ? 'Active' : `Closed${s.closedAt ? ' (' + new Date(s.closedAt).toLocaleTimeString() + ')' : ''}`;
+      const disableBtn = s.active ? '' : 'disabled';
+      return `
+        <tr data-id="${s.session_id}">
+          <td class="token">${s.session_id}</td>
+          <td>${s.attraction_id}</td>
+          <td>${created}</td>
+          <td>${status}</td>
+          <td class="actions">
+            <button type="button" class="danger" data-action="term-session" data-id="${s.session_id}" ${disableBtn}>Terminate</button>
+          </td>
+        </tr>`;
+    }).join('');
+    atcSessionsBody.innerHTML = rows;
+    Array.from(atcSessionsBody.querySelectorAll('button[data-action="term-session"]')).forEach((btn) => {
+      btn.addEventListener('click', () => handleTerminateSession(btn.dataset.id));
+    });
+  }
+
+  async function handleTerminateSession(session_id) {
+    try {
+      const resp = await fetch(`${basePath}/admin/atc/close-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': state.adminKey },
+        body: JSON.stringify({ session_id }),
+      });
+      if (!resp.ok) throw new Error('failed');
+      fetchAtcSessions();
+    } catch {
+      alert('Failed to terminate session.');
+    }
+  }
+
+  // --- Attractions ---
+  async function fetchAttractions() {
+    if (!state.adminKey || !attractionsBody) return;
+    const snapshot = captureInputState(attractionsBody, 'id');
+    try {
+      const resp = await fetch(`${basePath}/admin/atc/attractions`, { headers: { 'x-admin-key': state.adminKey } });
+      if (!resp.ok) throw new Error('failed');
+      const data = await resp.json();
+      const items = Array.isArray(data.attractions) ? data.attractions : [];
+      renderAttractions(items);
+      restoreInputState(attractionsBody, 'id', snapshot);
+    } catch {
+      attractionsBody.innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load attractions.</td></tr>';
+    }
+  }
+
+  function renderAttractions(items) {
+    if (!attractionsBody) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      attractionsBody.innerHTML = '<tr><td colspan="8" class="empty-state">No attractions found.</td></tr>';
+      return;
+    }
+    const rows = items.map((a) => {
+      const s = a.state || {};
+      const val = (v) => (v === 2 ? '—' : (v === 1 ? 'ON' : 'OFF'));
+      return `
+        <tr data-id="${a.attraction_id}">
+          <td class="token">${a.attraction_id}</td>
+          <td>${a.attraction_name || ''}</td>
+          <td>${val(s.atc_power)}</td>
+          <td>${val(s.atc_status)}</td>
+          <td>${val(s.atc_gates)}</td>
+          <td>${val(s.atc_beugels)}</td>
+          <td>${val(s.atc_emercency)}</td>
+          <td class="actions">
+            <button type="button" class="primary" data-action="open-atc" data-id="${a.attraction_id}" data-name="${a.attraction_name || ''}">Open Controls</button>
+          </td>
+        </tr>`;
+    }).join('');
+    attractionsBody.innerHTML = rows;
+    Array.from(attractionsBody.querySelectorAll('button[data-action="open-atc"]')).forEach((btn) => {
+      btn.addEventListener('click', () => handleOpenAtc(btn.dataset.id, btn.dataset.name));
+    });
+  }
+
+  function computeWsUrl() {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${window.location.host}${basePath}/ws/video`;
+  }
+
+  async function ensureAtcAdminPass() {
+    let pass = sessionStorage.getItem('atcAdminPass') || '';
+    if (!pass) {
+      pass = window.prompt('Enter ATC admin password');
+      if (!pass) throw new Error('cancelled');
+    }
+    return pass;
+  }
+
+  async function handleOpenAtc(attraction_id, attraction_name) {
+    try {
+      const adminPass = await ensureAtcAdminPass();
+      const resp = await fetch(`${basePath}/admin/atc/admin-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': state.adminKey },
+        body: JSON.stringify({ attraction_id, adminPass }),
+      });
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          sessionStorage.removeItem('atcAdminPass');
+          alert('Invalid ATC admin password');
+          return;
+        }
+        throw new Error('failed');
+      }
+      const data = await resp.json();
+      if (!data.ok || !data.session_id) throw new Error('no session');
+      sessionStorage.setItem('atcAdminPass', adminPass);
+
+      const wsUrl = new URL(computeWsUrl());
+      const token = `ADMIN_${Math.random().toString(36).slice(2, 8)}`;
+      wsUrl.searchParams.set('token', token);
+      wsUrl.searchParams.set('role', 'atc');
+      wsUrl.searchParams.set('playerName', 'Admin');
+
+      const popupUrl = new URL('/atc-controls.html', window.location.origin);
+      popupUrl.searchParams.set('ws', wsUrl.toString());
+      popupUrl.searchParams.set('attraction_name', attraction_name || attraction_id);
+      popupUrl.searchParams.set('attraction_id', attraction_id);
+      popupUrl.searchParams.set('playername', 'Admin');
+      popupUrl.searchParams.set('session_id', data.session_id);
+
+      const width = 1260; const height = 640;
+      const left = window.screenX + Math.max(0, window.innerWidth - width - 20);
+      const top = window.screenY + Math.max(0, window.innerHeight - height - 60);
+      window.open(
+        popupUrl.toString(),
+        `attraction-controls-${attraction_id}`,
+        `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=no`,
+      );
+    } catch (e) {
+      if (e && e.message === 'cancelled') return;
+      alert('Failed to open attraction controls.');
+    }
   }
 
   function promptFallback(prefill = '') {

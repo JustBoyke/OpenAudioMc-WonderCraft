@@ -394,6 +394,8 @@
     <nav class="tabs">
       <button type="button" class="tab-button active" data-tab="connections">Connections</button>
       <button type="button" class="tab-button" data-tab="regions">Regions</button>
+      <button type="button" class="tab-button" data-tab="attractions">Attractions</button>
+      <button type="button" class="tab-button" data-tab="atc_sessions">ATC Sessions</button>
     </nav>
 
     <section class="table-wrapper tab-content" id="connectionsSection">
@@ -438,6 +440,43 @@
           <tr>
             <td colspan="8" class="empty-state">Enter the admin key to load regions.</td>
           </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="attractionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Power</th>
+            <th>Status</th>
+            <th>Gates</th>
+            <th>Brackets</th>
+            <th>Emergency</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="attractionsBody">
+          <tr><td colspan="8" class="empty-state">Enter the admin key to load attractions.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="atcSessionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Attraction</th>
+            <th>Created</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="atcSessionsBody">
+          <tr><td colspan="5" class="empty-state">Enter the admin key to load sessions.</td></tr>
         </tbody>
       </table>
     </section>
