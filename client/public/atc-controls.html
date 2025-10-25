@@ -219,7 +219,6 @@
     const gates = document.getElementById('gates');
     const bracketsBtn = document.getElementById('brackets');
     const dispatchBtn = document.getElementById('dispatch');
-    const emTest = document.getElementById('emTest');
     const lockOverlay = document.getElementById('lockOverlay');
 
     const rideLed = document.getElementById('rideLed');
@@ -463,12 +462,7 @@
       bracketsBtn.disabled = disabled; dispatchBtn.disabled = disabled;
       if (disabled){ dispatchBtn.classList.add('locked'); } else { updateDispatchLock(); }
     }
-    emTest.addEventListener('click', ()=>{
-      if (guardAction(emTest)) return;
-      setEmergency(!emergencyActive);
-      log('Emergency toggled: ' + (emergencyActive?'AAN':'UIT'));
-      sendAtcUpdate('atc_emercency', emergencyActive ? 1 : 0);
-    });
+    // Removed emergency demo toggle; emergency is controlled by server updates only
 
     // Session invalidation/closure handling
     window.handleAtcSessionEvent = function(evt){
