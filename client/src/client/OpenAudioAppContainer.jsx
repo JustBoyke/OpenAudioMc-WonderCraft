@@ -20,6 +20,56 @@ import { VERSION } from '../build';
 import { isValidHttps } from './util/sslcheck';
 import { SeededTestData } from './config/TestData';
 
+function emitVideoAutoplayEvent(name) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  try {
+    window.dispatchEvent(new Event(name));
+  } catch (err) {
+    if (typeof document !== 'undefined' && document.createEvent) {
+      const evt = document.createEvent('Event');
+      evt.initEvent(name, true, true);
+      window.dispatchEvent(evt);
+    }
+  }
+}
+
+if (typeof window !== 'undefined' && typeof window.__oaVideoAutoplayReady === 'undefined') {
+  window.__oaVideoAutoplayReady = false;
+}
+
+function publishVideoSession(session) {
+  if (typeof window !== 'undefined') {
+    if (session && session.token) {
+      window.__oaVideoSession = {
+        token: session.token,
+        playerName: session.name,
+        playerUuid: session.uuid,
+        publicServerKey: session.publicServerKey,
+        scope: session.scope,
+      };
+    } else {
+      delete window.__oaVideoSession;
+      if (window.__oaVideoAutoplayReady) {
+        window.__oaVideoAutoplayReady = false;
+        emitVideoAutoplayEvent('oa-video-autoplay-reset');
+        if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.resetAutoplayQueue === 'function') {
+          try { window.__oaVideoExtensionDebug.resetAutoplayQueue(); } catch (err) { /* ignore */ }
+        }
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined'
+    && window.__oaVideoExtensionDebug
+    && typeof window.__oaVideoExtensionDebug.refreshIdentity === 'function') {
+    try {
+      window.__oaVideoExtensionDebug.refreshIdentity();
+    } catch (err) {
+      // ignore refresh errors
+    }
+  }
+}
+
 class OpenAudioAppContainer extends React.Component {
   static contextType = FadeToCtx;
 
@@ -102,6 +152,7 @@ class OpenAudioAppContainer extends React.Component {
             isLoading: false,
             currentUser: null,
           });
+          publishVideoSession(null);
           return;
         }
         // eslint-disable-next-line consistent-return
@@ -112,6 +163,7 @@ class OpenAudioAppContainer extends React.Component {
       .then(this.attemptLoginWithTokenSet)
       .catch((e) => {
         setGlobalState({ isLoading: false });
+        publishVideoSession(null);
         fatalToast(`Your current link has expired. Please run /audio again to get a new link. Error: ${e.message}`);
         reportError(e);
         return null;
@@ -130,6 +182,8 @@ class OpenAudioAppContainer extends React.Component {
 
   async attemptLoginWithTokenSet(tokenSet) {
     if (tokenSet == null) return;
+    publishVideoSession(tokenSet);
+
     setGlobalState({
       currentUser: {
         userName: tokenSet.name,
@@ -154,6 +208,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to get server details from ${publicServerKey}`);
       throw new Error(`Failed to get server details from ${publicServerKey}`);
     }
@@ -165,6 +220,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to get server details from ${publicServerKey}! Please try again later or contact support.`);
       throw new Error(`Failed to get server details from ${publicServerKey}`);
     }
@@ -178,6 +234,7 @@ class OpenAudioAppContainer extends React.Component {
         isPersonalBlock: (serverData.isPersonalBlock != null && serverData.isPersonalBlock), // is it the account, or me?
         isLoading: false,
       });
+      publishVideoSession(null);
       // don't continue loading
       reportVital('metrics:accountlocked');
       return;
@@ -270,6 +327,7 @@ class OpenAudioAppContainer extends React.Component {
         isLoading: false,
         currentUser: null,
       });
+      publishVideoSession(null);
       fatalToast(`Failed to connect with ${publicServerKey}! Please try a new link from /audio, or contact server staff if the issue persists.`);
       throw new Error(`Server ${publicServerKey} is offline`);
     } else {
@@ -297,6 +355,13 @@ class OpenAudioAppContainer extends React.Component {
     MediaManager.postBoot();
     SocketManager.connectToServer(getGlobalState().relay.endpoint);
     setGlobalState({ clickLock: false });
+    if (typeof window !== 'undefined') {
+      window.__oaVideoAutoplayReady = true;
+      emitVideoAutoplayEvent('oa-video-autoplay-ready');
+      if (window.__oaVideoExtensionDebug && typeof window.__oaVideoExtensionDebug.flushAutoplayQueue === 'function') {
+        try { window.__oaVideoExtensionDebug.flushAutoplayQueue(); } catch (err) { /* ignore */ }
+      }
+    }
     this.setState({ didUnlock: true });
 
     // store dev vars

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OA Video Admin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-primary: #0f1115;
+      --bg-secondary: #181b21;
+      --bg-tertiary: #1f242c;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --accent: #4f46e5;
+      --accent-soft: rgba(79, 70, 229, 0.15);
+      --danger: #ef4444;
+      --success: #22c55e;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 32px;
+    }
+
+    .container {
+      width: min(1200px, 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    header {
+      background: linear-gradient(135deg, rgba(79, 70, 229, 0.25), rgba(14, 116, 144, 0.2));
+      border: 1px solid rgba(79, 70, 229, 0.25);
+      border-radius: 16px;
+      padding: 24px 28px;
+      box-shadow: 0 18px 45px rgba(15, 15, 35, 0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    header p {
+      margin: 0;
+      color: var(--text-secondary);
+    }
+
+    .panel {
+      background: var(--bg-secondary);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      border-radius: 14px;
+      padding: 20px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel .field {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    label {
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    input[type="password"],
+    input[type="text"] {
+      background: var(--bg-tertiary);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      color: var(--text-primary);
+      padding: 8px 12px;
+      border-radius: 8px;
+      min-width: 220px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 8px 24px rgba(79, 70, 229, 0.35);
+    }
+
+    button.ghost {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: var(--text-primary);
+    }
+
+    button.danger {
+      background: rgba(239, 68, 68, 0.12);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    button:not(:disabled):hover {
+      transform: translateY(-1px);
+    }
+
+    .status-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .status-bar strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .status-text[data-variant="error"] {
+      color: var(--danger);
+    }
+
+    .status-text[data-variant="ok"] {
+      color: var(--success);
+    }
+
+    .table-wrapper {
+      background: var(--bg-secondary);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 12px;
+    }
+
+    .tab-button {
+      background: transparent;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      color: var(--text-secondary);
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .tab-button.active {
+      background: rgba(79, 70, 229, 0.18);
+      border-color: rgba(79, 70, 229, 0.55);
+      color: var(--text-primary);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.25);
+    }
+
+    .tab-content.hidden {
+      display: none;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    thead {
+      background: rgba(79, 70, 229, 0.12);
+    }
+
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+    }
+
+    th {
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    tbody tr:hover {
+      background: rgba(79, 70, 229, 0.06);
+    }
+
+    .token {
+      font-family: "SFMono-Regular", "JetBrains Mono", monospace;
+      font-weight: 600;
+    }
+
+    .muted-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-secondary);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+
+    .session-tag {
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: var(--text-secondary);
+      padding: 28px 16px;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 16px;
+      }
+
+      th, td {
+        padding: 10px 12px;
+      }
+
+      .panel {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(12, 15, 24, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    }
+
+    .modal-backdrop.visible {
+      display: flex;
+    }
+
+    .modal-card {
+      background: var(--bg-secondary);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 16px;
+      padding: 28px 32px;
+      width: min(420px, 92vw);
+      box-shadow: 0 24px 70px rgba(15, 15, 40, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .modal-card h2 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .modal-card p {
+      margin: 0;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .modal-card .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="modal-backdrop" id="authModal">
+    <div class="modal-card">
+      <h2>Enter Admin Key</h2>
+      <p style="color: var(--text-secondary); margin: 0;">Provide the backend admin key to manage active video sessions.</p>
+      <input type="password" id="modalAdminKey" placeholder="changeme" />
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="modalCancel">Cancel</button>
+        <button type="button" class="primary" id="modalApply">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="playModal">
+    <div class="modal-card">
+      <h2>Play Video</h2>
+      <p>Provide the video URL and configure whether the session should close automatically when it ends.</p>
+      <div class="input-group">
+        <label for="playUrl">Video URL</label>
+        <input type="text" id="playUrl" placeholder="https://example.com/video.mp4" />
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="playAutoclose" />
+        <span>Autoclose when playback finishes</span>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="playCancel">Cancel</button>
+        <button type="button" class="primary" id="playConfirm">Play</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <header>
+      <h1>OpenAudioMC Video Admin</h1>
+      <p>Monitor connections, inspect active sessions, and dispatch commands without touching curl.</p>
+    </header>
+
+    <section class="panel">
+      <div class="field">
+        <label for="adminKey">Admin Key</label>
+        <input type="password" id="adminKey" placeholder="changeme" />
+        <button type="button" class="primary" id="applyKey">Apply</button>
+        <button type="button" class="ghost" id="refreshNow">Refresh</button>
+        <button type="button" class="ghost" id="logoutKey">Logout</button>
+      </div>
+      <div class="status-text" id="statusText">Waiting for admin key…</div>
+    </section>
+
+    <section class="status-bar">
+      <div><strong>Connections:</strong> <span id="connCount">0</span></div>
+      <div><strong>Active Sessions:</strong> <span id="activeCount">0</span></div>
+      <div><strong>Regions:</strong> <span id="regionCount">0</span></div>
+      <div><strong>Last Refresh:</strong> <span id="lastRefresh">—</span></div>
+    </section>
+
+    <nav class="tabs">
+      <button type="button" class="tab-button active" data-tab="connections">Connections</button>
+      <button type="button" class="tab-button" data-tab="regions">Regions</button>
+      <button type="button" class="tab-button" data-tab="attractions">Attractions</button>
+      <button type="button" class="tab-button" data-tab="atc_sessions">ATC Sessions</button>
+    </nav>
+
+    <section class="table-wrapper tab-content" id="connectionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Player</th>
+            <th>Region</th>
+            <th>Session</th>
+            <th>Status</th>
+            <th>Position</th>
+            <th>Volume</th>
+            <th>Autoclose</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="connectionsBody">
+          <tr>
+            <td colspan="10" class="empty-state">Enter the admin key to load connections.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="regionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>Region</th>
+            <th>Members</th>
+            <th>Status</th>
+            <th>Position</th>
+            <th>Volume</th>
+            <th>Autoclose</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="regionsBody">
+          <tr>
+            <td colspan="8" class="empty-state">Enter the admin key to load regions.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="attractionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Power</th>
+            <th>Status</th>
+            <th>Gates</th>
+            <th>Brackets</th>
+            <th>Emergency</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="attractionsBody">
+          <tr><td colspan="8" class="empty-state">Enter the admin key to load attractions.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="table-wrapper tab-content hidden" id="atcSessionsSection">
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Attraction</th>
+            <th>Created</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="atcSessionsBody">
+          <tr><td colspan="5" class="empty-state">Enter the admin key to load sessions.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <script src="/api/admin/static/dashboard.js" defer></script>
+</body>
+</html>

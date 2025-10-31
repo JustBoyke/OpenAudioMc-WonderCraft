@@ -68,6 +68,7 @@ function ClientView(props) {
             transparentNavbar
           />
         </TabWindowMemo>
+        <div id="oa-video-root" />
       </div>
 
       {props.loadingOverlay.visible ? (
