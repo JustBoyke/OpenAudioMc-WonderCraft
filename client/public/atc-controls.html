@@ -297,9 +297,9 @@
       powerLed.className = 'mini-led ' + (power.checked ? 'on' : 'off');
       openLed.className = 'mini-led ' + (openAttraction.checked ? 'on' : 'off');
 
-      // Trein in station: server override or derived
+      // Trein in station: server override or derived from state
       if (stationOverride === null) {
-        treinInStation = power.checked && state !== STATE.RUNNING;
+        treinInStation = state !== STATE.RUNNING;
       } else {
         treinInStation = !!stationOverride;
       }
@@ -361,8 +361,6 @@
         setState(STATE.IDLE, 'Stroom AAN. Systeem wacht.');
       } else {
         setState(STATE.OFF, 'Stroom UIT. Alles uitgeschakeld.');
-        gates.checked = false; // power off implies gates control inactive
-        setBrackets(false);
       }
       // Status (open/closed) is independent of power; do not change it here
       openAttraction.disabled = isDisabled('atc_status');
@@ -406,17 +404,29 @@
 
     // Dispatch
     let running = false;
+    function applyStationState(inStation, { announce = true } = {}){
+      if (inStation === null) {
+        stationOverride = null;
+        updateSensors();
+        updateDispatchLock();
+        return;
+      }
+      stationOverride = !!inStation;
+      running = !stationOverride;
+      if (stationOverride) {
+        setState(STATE.RETURNED, announce ? 'Trein terug in station. Wacht op operator.' : null);
+      } else {
+        setState(STATE.RUNNING, announce ? 'Trein vertrokken. Wachten op binnenmelding…' : null);
+      }
+    }
+
     async function runCycle(){
       if (running || state === STATE.OFF || emergencyActive) return;
       if (!kanVertrekken()){
         const ontbreekt=[]; if(!power.checked) ontbreekt.push('Stroom'); if(!treinInStation) ontbreekt.push('Trein in station'); if(!gatesSatisfiedClosed()) ontbreekt.push('Poorten dicht'); if(!bracketsSatisfiedLocked()) ontbreekt.push('Beugels vast');
         log('Kan niet vertrekken. Vereist: ' + ontbreekt.join(', ')); return; }
-      running = true; setState(STATE.RUNNING, 'Vertrek…');
-      await sleep(600); log('Trein verlaat station…');
-      await sleep(1200); log('Op het parcours…');
-      await sleep(1200); log('Nabij remmen…');
-      await sleep(900); log('Trein gestopt. In station.');
-      running = false; setState(STATE.RETURNED, 'Trein terug in station. Wacht op operator.'); updateSensors();
+      applyStationState(false);
+      sendAtcUpdate('atc_station', 0);
     }
 
     dispatchBtn.addEventListener('mousedown', () => dispatchBtn.classList.add('active'));
@@ -501,7 +511,10 @@
       if (typeof data.atc_power === 'number' && data.atc_power !== 2) power.checked = data.atc_power === 1;
       if (typeof data.atc_status === 'number' && data.atc_status !== 2) openAttraction.checked = data.atc_status === 1;
       if (typeof data.atc_station === 'number') {
-        if (data.atc_station === 2) stationOverride = null; else stationOverride = data.atc_station === 1;
+        if (data.atc_station === 2) applyStationState(null, { announce: false }); else applyStationState(data.atc_station === 1, { announce: false });
+      }
+      if (typeof data.atc_instation === 'number') {
+        if (data.atc_instation === 2) applyStationState(null, { announce: false }); else applyStationState(data.atc_instation === 1, { announce: false });
       }
       if (typeof data.atc_gates === 'number' && data.atc_gates !== 2) gates.checked = data.atc_gates === 1;
       if (typeof data.atc_beugels === 'number' && data.atc_beugels !== 2) setBrackets(data.atc_beugels === 1);
@@ -530,7 +543,10 @@
           break;
         case 'atc_station':
           serverDisabled.atc_station = (value === 2);
-          stationOverride = (value === 2) ? null : (value === 1);
+          applyStationState(value === 2 ? null : value === 1);
+          break;
+        case 'atc_instation':
+          applyStationState(value === 2 ? null : value === 1);
           break;
         case 'atc_gates':
           serverDisabled.atc_gates = (value === 2);
