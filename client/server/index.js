@@ -1655,13 +1655,14 @@ pluginWss.on("connection", (ws) => {
           playername = null,
         } = msg || {};
         const valid = typeof attraction_id === 'string' && typeof name === 'string' && [0,1,2].includes(value);
-        const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
+        const validNames = new Set(['atc_power','atc_status','atc_station','atc_instation','atc_gates','atc_beugels','atc_emercency']);
         if (!valid || !validNames.has(name)) {
           result = buildError(400, "invalid_atc_update");
           break;
         }
+        const canonicalName = name === 'atc_instation' ? 'atc_station' : name;
         const state = getOrInitAtcState(attraction_id);
-        state[name] = value;
+        state[canonicalName] = value;
         state.updatedAt = Date.now();
 
         // Persist to file. Merge with existing to keep attraction_name.
@@ -1681,7 +1682,7 @@ pluginWss.on("connection", (ws) => {
           await writeAttractionFile(attraction_id, record);
         } catch { /* ignore file errors */ }
 
-        const payload = { type: 'atc_serverUpdate', name, value, session_id, playername, attraction_id };
+        const payload = { type: 'atc_serverUpdate', name: canonicalName, value, session_id, playername, attraction_id };
         const delivered = broadcastAtc(attraction_id, payload);
         result = { status: 200, body: { ok: true, delivered } };
         break;
@@ -1904,11 +1905,12 @@ wss.on("connection", async (ws, request) => {
           }
           const { name, value } = msg || {};
           if (!attractionId || typeof name !== 'string') break;
-          const validNames = new Set(['atc_power','atc_status','atc_station','atc_gates','atc_beugels','atc_emercency']);
+          const validNames = new Set(['atc_power','atc_status','atc_station','atc_instation','atc_gates','atc_beugels','atc_emercency']);
           if (!validNames.has(name)) break;
           if (![0,1,2].includes(value)) break;
           // Forward to plugin to execute; plugin will respond with ATC_SERVER_UPDATE
-          const payload = { type: 'ATC_CLIENT_UPDATE', attraction_id: attractionId, name, value, session_id: sessionId, playername };
+          const canonicalName = name === 'atc_instation' ? 'atc_station' : name;
+          const payload = { type: 'ATC_CLIENT_UPDATE', attraction_id: attractionId, name: canonicalName, value, session_id: sessionId, playername };
           for (const p of pluginClients) {
             try { if (p.readyState === 1) p.send(JSON.stringify(payload)); } catch { /* ignore */ }
           }
