@@ -1905,7 +1905,7 @@ wss.on("connection", async (ws, request) => {
           }
           const { name, value } = msg || {};
           if (!attractionId || typeof name !== 'string') break;
-          const validNames = new Set(['atc_power','atc_status','atc_station','atc_instation','atc_gates','atc_beugels','atc_emercency']);
+          const validNames = new Set(['atc_power', 'atc_status', 'atc_station', 'atc_instation', 'atc_gates', 'atc_beugels', 'atc_emercency']);
           if (!validNames.has(name)) break;
           if (![0,1,2].includes(value)) break;
           // Forward to plugin to execute; plugin will respond with ATC_SERVER_UPDATE
