@@ -179,6 +179,41 @@ function sanitizeVersion(value) {
   return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
 
+function sanitizeTexturepackFilename(name) {
+  if (typeof name !== "string") return null;
+  const base = path.basename(name);
+  if (!base.toLowerCase().endsWith(".zip")) return null;
+  const stem = base.slice(0, -4);
+  const safeStem = sanitizeVersion(stem);
+  if (!safeStem) return null;
+  return `${safeStem}.zip`;
+}
+
+async function storeTexturepack(buffer, { version, filename, contentType } = {}) {
+  if (!buffer || !buffer.length) return { ok: false, error: "empty_body" };
+
+  const sanitizedVersion = sanitizeVersion(version);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const sanitizedFilename = filename
+    ? sanitizeTexturepackFilename(filename)
+    : `texturepack-${sanitizedVersion || timestamp}.zip`;
+
+  if (!sanitizedFilename) return { ok: false, error: "invalid_filename" };
+
+  const target = path.join(TEXTUREPACK_DIR, sanitizedFilename);
+  await fsp.writeFile(target, buffer);
+  const versionFromFilename = sanitizeVersion(path.basename(sanitizedFilename, path.extname(sanitizedFilename)));
+  const meta = {
+    latestFile: sanitizedFilename,
+    version: sanitizedVersion || versionFromFilename,
+    uploadedAt: Date.now(),
+    contentType: contentType || null,
+    contentLength: buffer.length,
+  };
+  await writeTexturepackMeta(meta);
+  return { ok: true, filename: sanitizedFilename, version: meta.version, meta };
+}
+
 async function getLatestTexturepackPath() {
   const meta = await readTexturepackMeta();
   if (!meta || !meta.latestFile) return null;
@@ -206,29 +241,57 @@ app.get("/admin/dashboard", (_req, res) => {
 const texturepackUploadBody = express.raw({ type: "*/*", limit: process.env.TEXTUREPACK_MAX_SIZE || "256mb" });
 
 app.post("/admin/texturepack/upload", requireAdmin, texturepackUploadBody, async (req, res) => {
-  const buf = req.body;
-  if (!buf || !buf.length) {
-    return res.status(400).json({ error: "empty_body" });
-  }
-
-  const requestedVersion = sanitizeVersion(req.query.version || req.get("x-texturepack-version"));
-  const version = requestedVersion || null;
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `texturepack-${version || timestamp}.zip`;
-  const target = path.join(TEXTUREPACK_DIR, filename);
-
   try {
-    await fsp.writeFile(target, buf);
-    const meta = {
-      latestFile: filename,
-      version,
-      uploadedAt: Date.now(),
-      contentType: req.get("content-type") || null,
-      contentLength: buf.length,
-    };
-    await writeTexturepackMeta(meta);
+    const requestedVersion = req.query.version || req.get("x-texturepack-version");
+    const result = await storeTexturepack(req.body, {
+      version: requestedVersion,
+      contentType: req.get("content-type"),
+    });
+
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error });
+    }
+
     const publicUrl = `${req.protocol}://${req.get("host")}/texturepack/latest`;
-    return res.status(201).json({ ok: true, version, file: filename, url: publicUrl });
+    return res.status(201).json({ ok: true, version: result.version, file: result.filename, url: publicUrl });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to store texturepack", err);
+    return res.status(500).json({ error: "failed_to_store" });
+  }
+});
+
+app.head("/admin/texturepack/upload/resourcepacks/:filename", requireAdmin, async (req, res) => {
+  const filename = sanitizeTexturepackFilename(req.params.filename);
+  if (!filename) return res.sendStatus(404);
+
+  const candidate = path.join(TEXTUREPACK_DIR, filename);
+  try {
+    const st = await fsp.stat(candidate);
+    if (st.isFile()) {
+      res.setHeader("Content-Length", st.size);
+      return res.sendStatus(200);
+    }
+  } catch { /* ignore */ }
+  return res.sendStatus(404);
+});
+
+app.put("/admin/texturepack/upload/resourcepacks/:filename", requireAdmin, texturepackUploadBody, async (req, res) => {
+  try {
+    const requestedVersion = req.query.version || req.get("x-texturepack-version");
+    const result = await storeTexturepack(req.body, {
+      version: requestedVersion,
+      filename: req.params.filename,
+      contentType: req.get("content-type"),
+    });
+
+    if (!result.ok) {
+      const status = result.error === "empty_body" ? 400 : 422;
+      return res.status(status).json({ error: result.error });
+    }
+
+    const publicUrl = `${req.protocol}://${req.get("host")}/texturepack/latest`;
+    return res.status(201).json({ ok: true, version: result.version, file: result.filename, url: publicUrl });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to store texturepack", err);
