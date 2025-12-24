@@ -1318,6 +1318,10 @@ app.post("/set-region", (req, res) => {
   return res.status(status).json(body);
 });
 
+app.get("/admin/checkup", (_req, res) => {
+  return res.status(200).json({ status: "online" });
+});
+
 // Example: init a video
 app.post("/admin/video/init", requireAdmin, (req, res) => {
   const { status, body } = handleVideoInitRequest(req.body || {});
