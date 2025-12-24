@@ -261,7 +261,7 @@ app.post("/admin/texturepack/upload", requireAdmin, texturepackUploadBody, async
   }
 });
 
-app.head("/admin/texturepack/upload/resourcepacks/:filename", requireAdmin, async (req, res) => {
+app.head("/admin/texturepack/upload/resourcepacks/:filename", async (req, res) => {
   const filename = sanitizeTexturepackFilename(req.params.filename);
   if (!filename) return res.sendStatus(404);
 
@@ -276,7 +276,7 @@ app.head("/admin/texturepack/upload/resourcepacks/:filename", requireAdmin, asyn
   return res.sendStatus(404);
 });
 
-app.put("/admin/texturepack/upload/resourcepacks/:filename", requireAdmin, texturepackUploadBody, async (req, res) => {
+app.put("/admin/texturepack/upload/resourcepacks/:filename", texturepackUploadBody, async (req, res) => {
   try {
     const requestedVersion = req.query.version || req.get("x-texturepack-version");
     const result = await storeTexturepack(req.body, {
