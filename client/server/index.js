@@ -146,12 +146,49 @@ async function validateOAToken(token) {
 
 const ADMIN_STATIC_DIR = path.join(__dirname, "admin");
 const ATTRACTIONS_DIR = path.join(__dirname, "attractions");
+const TEXTUREPACK_DIR = path.join(__dirname, "texturepacks");
+const TEXTUREPACK_META = path.join(TEXTUREPACK_DIR, "metadata.json");
 
 function ensureDirSync(dir) {
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
 }
 
 ensureDirSync(ATTRACTIONS_DIR);
+ensureDirSync(TEXTUREPACK_DIR);
+
+async function readTexturepackMeta() {
+  try {
+    const raw = await fsp.readFile(TEXTUREPACK_META, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) return null;
+    throw err;
+  }
+}
+
+async function writeTexturepackMeta(meta) {
+  try {
+    await fsp.writeFile(TEXTUREPACK_META, JSON.stringify(meta, null, 2), "utf8");
+  } catch { /* ignore */ }
+}
+
+function sanitizeVersion(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
+
+async function getLatestTexturepackPath() {
+  const meta = await readTexturepackMeta();
+  if (!meta || !meta.latestFile) return null;
+  const candidate = path.join(TEXTUREPACK_DIR, meta.latestFile);
+  try {
+    const st = await fsp.stat(candidate);
+    if (st.isFile()) return candidate;
+  } catch { /* ignore */ }
+  return null;
+}
 
 // --- HTTP admin endpoints (you can protect with an admin secret) ---
 function requireAdmin(req, res, next) {
@@ -164,6 +201,61 @@ app.use("/admin/static", express.static(ADMIN_STATIC_DIR));
 
 app.get("/admin/dashboard", (_req, res) => {
   res.sendFile(path.join(ADMIN_STATIC_DIR, "dashboard.html"));
+});
+
+const texturepackUploadBody = express.raw({ type: "*/*", limit: process.env.TEXTUREPACK_MAX_SIZE || "256mb" });
+
+app.post("/admin/texturepack/upload", requireAdmin, texturepackUploadBody, async (req, res) => {
+  const buf = req.body;
+  if (!buf || !buf.length) {
+    return res.status(400).json({ error: "empty_body" });
+  }
+
+  const requestedVersion = sanitizeVersion(req.query.version || req.get("x-texturepack-version"));
+  const version = requestedVersion || null;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `texturepack-${version || timestamp}.zip`;
+  const target = path.join(TEXTUREPACK_DIR, filename);
+
+  try {
+    await fsp.writeFile(target, buf);
+    const meta = {
+      latestFile: filename,
+      version,
+      uploadedAt: Date.now(),
+      contentType: req.get("content-type") || null,
+      contentLength: buf.length,
+    };
+    await writeTexturepackMeta(meta);
+    const publicUrl = `${req.protocol}://${req.get("host")}/texturepack/latest`;
+    return res.status(201).json({ ok: true, version, file: filename, url: publicUrl });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to store texturepack", err);
+    return res.status(500).json({ error: "failed_to_store" });
+  }
+});
+
+app.get("/texturepack/info", async (_req, res) => {
+  const meta = await readTexturepackMeta();
+  if (!meta) {
+    return res.status(404).json({ error: "not_found" });
+  }
+  return res.json({ ok: true, ...meta });
+});
+
+app.get("/texturepack/latest", async (req, res) => {
+  const latestPath = await getLatestTexturepackPath();
+  if (!latestPath) {
+    return res.status(404).json({ error: "not_found" });
+  }
+  const meta = await readTexturepackMeta();
+  const filename = meta?.latestFile || path.basename(latestPath);
+  if (meta?.contentType) {
+    res.type(meta.contentType);
+  }
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  return res.sendFile(latestPath);
 });
 
 function snapshotPayload(payload) {
