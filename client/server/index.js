@@ -29,6 +29,10 @@ app.use(express.json());
 // In-memory stores (replace with Redis if you want multiple instances)
 const clientsByToken = new Map(); // token -> { ws, playerId, lastSeen }
 const atcSocketsByToken = new Map(); // token -> Set<ws> (secondary popup connections)
+const modClients = new Set(); // minecraft mod websocket connections
+const modMetaByWs = new WeakMap(); // ws -> { theaterId, serverName, worldName, player, screenUuid }
+const modSocketsByRegion = new Map(); // regionId -> Set<ws>
+let modTokenCounter = 0;
 // ATC state and connection tracking
 const atcStateByAttraction = new Map(); // attraction_id -> state snapshot
 const atcSocketsByAttraction = new Map(); // attraction_id -> Set<ws>
@@ -533,6 +537,51 @@ function getRegionDisplayName(regionId) {
   return regionDisplayNames.get(regionId) || regionId;
 }
 
+function nextModToken() {
+  modTokenCounter += 1;
+  return `mod:${modTokenCounter}`;
+}
+
+function ensureModToken(meta) {
+  if (!meta.modToken) meta.modToken = nextModToken();
+  return meta.modToken;
+}
+
+function attachModToRegion(regionId, ws) {
+  if (!regionId || !ws) return;
+  let set = modSocketsByRegion.get(regionId);
+  if (!set) { set = new Set(); modSocketsByRegion.set(regionId, set); }
+  set.add(ws);
+}
+
+function detachModFromRegion(ws) {
+  if (!ws) return;
+  const meta = modMetaByWs.get(ws);
+  if (meta && meta.regionId) {
+    const set = modSocketsByRegion.get(meta.regionId);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) modSocketsByRegion.delete(meta.regionId);
+    }
+  }
+}
+
+function assignRegionForMod(ws, theaterId) {
+  const meta = modMetaByWs.get(ws) || {};
+  const next = normalizeRegionId(theaterId, { displayName: theaterId });
+  if (meta.regionId === next) return;
+  if (meta.regionId) {
+    const set = modSocketsByRegion.get(meta.regionId);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) modSocketsByRegion.delete(meta.regionId);
+    }
+  }
+  if (next) attachModToRegion(next, ws);
+  meta.regionId = next || null;
+  modMetaByWs.set(ws, meta);
+}
+
 function normalizeRegionId(value, options = {}) {
   if (value == null) return null;
   if (typeof value !== "string") return null;
@@ -874,6 +923,16 @@ function sendToRegion(regionId, payload, context = {}, options = {}) {
     for (const token of members) {
       const ok = sendToClientByToken(token, payload, context);
       delivered = delivered || ok;
+    }
+  }
+  const modMembers = modSocketsByRegion.get(canonical);
+  if (modMembers) {
+    for (const ws of modMembers) {
+      if (ws.readyState !== 1) continue;
+      try {
+        ws.send(JSON.stringify(payload));
+        delivered = true;
+      } catch { /* ignore */ }
     }
   }
   return delivered;
@@ -1640,7 +1699,7 @@ const adminClients = new Set();
 
 function buildConnectionsData() {
   const now = Date.now();
-  return Array.from(clientsByToken.entries()).map(([token, info]) => ({
+  const webConnections = Array.from(clientsByToken.entries()).map(([token, info]) => ({
     token,
     playerId: info.playerId,
     playerUuid: info.playerUuid,
@@ -1664,6 +1723,39 @@ function buildConnectionsData() {
       };
     })(),
   }));
+
+  const modConnections = Array.from(modClients).map((ws) => {
+    const meta = modMetaByWs.get(ws) || {};
+    const regionId = meta.regionId || null;
+    const regionDisplayName = regionId ? getRegionDisplayName(regionId) : null;
+    const mediaRecord = regionId ? activeMediaByRegion.get(regionId) : null;
+    return {
+      kind: "mod",
+      token: meta.modToken || "mod:unknown",
+      playerId: meta.player?.uuid || meta.player?.name || null,
+      playerUuid: meta.player?.uuid || null,
+      playerName: meta.player?.name || "minecraft_mod",
+      publicServerKey: null,
+      scope: "mod",
+      region: regionId,
+      regionDisplayName,
+      connectedAt: meta.connectedAt || null,
+      lastSeen: meta.lastSeen || null,
+      readyState: ws?.readyState,
+      idleMs: meta.lastSeen ? now - meta.lastSeen : null,
+      activeMedia: (() => {
+        if (!mediaRecord || !mediaRecord.state || mediaRecord.state.status === 'idle') return null;
+        return {
+          sessionId: mediaRecord.sessionId || null,
+          init: snapshotPayload(mediaRecord.init),
+          state: snapshotPayload(mediaRecord.state),
+          lastUpdate: mediaRecord.lastUpdate,
+        };
+      })(),
+    };
+  });
+
+  return webConnections.concat(modConnections);
 }
 
 function buildRegionsData() {
@@ -1745,6 +1837,7 @@ function resetInMemoryStores() {
   regionByToken.clear();
   regionByPlayerKey.clear();
   regionDisplayNames.clear();
+  modSocketsByRegion.clear();
 }
 
 // Optional: keep-alive ping from server
@@ -1908,27 +2001,47 @@ wss.on("connection", async (ws, request) => {
   const hintedPlayerUuid = params.get("playerUuid");
   const hintedPlayerName = params.get("playerName");
   const role = (params.get("role") || params.get("atc") || "").toString().toLowerCase();
+  const hasToken = typeof token === "string" && token.trim();
+  const modHelloTimeoutMs = 5000;
 
   // Validate token
-  const result = await validateOAToken(token);
-  if (!result.ok) {
-    ws.close(1008, "invalid token");
-    return;
+  let result = { ok: false, playerId: null };
+  if (hasToken) {
+    result = await validateOAToken(token);
+    if (!result.ok) {
+      ws.close(1008, "invalid token");
+      return;
+    }
   }
 
   let { playerId } = result;
-  if (!playerId) {
+  if (!playerId && hasToken) {
     playerId = hintedPlayerUuid || hintedPlayerName || `player-${token.slice(0, 6)}`;
   }
 
   const isAtc = role === 'atc' || role === '1' || role === 'true';
+  let isModClient = false;
+  let modHelloTimer = null;
 
-  if (isAtc) {
+  if (!hasToken && isAtc) {
+    ws.close(1008, "token required");
+    return;
+  }
+
+  if (!hasToken) {
+    modHelloTimer = setTimeout(() => {
+      if (!isModClient && ws.readyState === 1) {
+        ws.close(1008, "token required");
+      }
+    }, modHelloTimeoutMs);
+  }
+
+  if (hasToken && isAtc) {
     // Secondary ATC popup connection: don't replace the primary mapping
     let set = atcSocketsByToken.get(token);
     if (!set) { set = new Set(); atcSocketsByToken.set(token, set); }
     set.add(ws);
-  } else {
+  } else if (hasToken) {
     // Primary client mapping
     clientsByToken.set(token, {
       ws,
@@ -1993,6 +2106,87 @@ wss.on("connection", async (ws, request) => {
   ws.on("message", async (data) => {
     try {
       const msg = JSON.parse(data.toString());
+      const rawType = typeof msg?.type === "string" ? msg.type : "";
+      const lowerType = rawType.toLowerCase();
+
+      if (!hasToken && !isModClient) {
+        if (lowerType === "hello" && msg?.client === "minecraft_mod") {
+          isModClient = true;
+          if (modHelloTimer) {
+            clearTimeout(modHelloTimer);
+            modHelloTimer = null;
+          }
+          const theaterId = typeof msg.theaterId === "string" ? msg.theaterId : "";
+          const serverName = typeof msg.server === "string" ? msg.server : "";
+          const worldName = typeof msg.world === "string" ? msg.world : "";
+          const player = msg.player && typeof msg.player === "object" ? msg.player : null;
+          const screenUuid = typeof msg.screenUuid === "string" ? msg.screenUuid : "";
+          modClients.add(ws);
+          const connectedAt = Date.now();
+          const meta = {
+            theaterId,
+            serverName,
+            worldName,
+            player,
+            screenUuid,
+            regionId: null,
+            connectedAt,
+            lastSeen: connectedAt,
+          };
+          ensureModToken(meta);
+          modMetaByWs.set(ws, meta);
+          assignRegionForMod(ws, theaterId);
+          try { broadcastAdminConnections(); } catch { /* ignore */ }
+          try { broadcastAdminRegions(); } catch { /* ignore */ }
+          try {
+            ws.send(JSON.stringify({
+              type: "hello_ack",
+              ok: true,
+              cinemaName: process.env.CINEMA_NAME || "",
+            }));
+          } catch { /* ignore */ }
+        } else {
+          ws.close(1008, "token required");
+        }
+        return;
+      }
+
+      if (isModClient) {
+        const existingMeta = modMetaByWs.get(ws) || {};
+        existingMeta.lastSeen = Date.now();
+        modMetaByWs.set(ws, existingMeta);
+        if (lowerType === "hello" && msg?.client === "minecraft_mod") {
+          const theaterId = typeof msg.theaterId === "string" ? msg.theaterId : "";
+          const serverName = typeof msg.server === "string" ? msg.server : "";
+          const worldName = typeof msg.world === "string" ? msg.world : "";
+          const player = msg.player && typeof msg.player === "object" ? msg.player : null;
+          const screenUuid = typeof msg.screenUuid === "string" ? msg.screenUuid : "";
+          const existing = modMetaByWs.get(ws) || {};
+          const nextMeta = {
+            ...existing,
+            theaterId,
+            serverName,
+            worldName,
+            player,
+            screenUuid,
+            lastSeen: Date.now(),
+          };
+          ensureModToken(nextMeta);
+          modMetaByWs.set(ws, nextMeta);
+          assignRegionForMod(ws, theaterId);
+          try { broadcastAdminConnections(); } catch { /* ignore */ }
+          try { broadcastAdminRegions(); } catch { /* ignore */ }
+          try {
+            ws.send(JSON.stringify({
+              type: "hello_ack",
+              ok: true,
+              cinemaName: process.env.CINEMA_NAME || "",
+            }));
+          } catch { /* ignore */ }
+        }
+        return;
+      }
+
       if (!isAtc) {
         const clientInfo = clientsByToken.get(token);
         if (clientInfo) clientInfo.lastSeen = Date.now();
@@ -2098,6 +2292,16 @@ wss.on("connection", async (ws, request) => {
 
   ws.on("close", () => {
     clearInterval(pingIv);
+    if (modHelloTimer) clearTimeout(modHelloTimer);
+    if (isModClient) {
+      detachModFromRegion(ws);
+      modClients.delete(ws);
+      modMetaByWs.delete(ws);
+      try { broadcastAdminConnections(); } catch { /* ignore */ }
+      try { broadcastAdminRegions(); } catch { /* ignore */ }
+      return;
+    }
+    if (!hasToken) return;
     if (isAtc) {
       const set = atcSocketsByToken.get(token);
       if (set) {

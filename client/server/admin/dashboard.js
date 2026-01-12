@@ -576,6 +576,15 @@
   }
 
   function createConnectionTarget(connection) {
+    if (connection?.kind === 'mod' && connection.region) {
+      return {
+        kind: 'region',
+        regionId: connection.region,
+        regionDisplayName: connection.regionDisplayName || null,
+        sessionId: connection.activeMedia?.sessionId || null,
+        defaults: getConnectionDefaults(connection),
+      };
+    }
     return {
       kind: 'token',
       token: connection.token,
